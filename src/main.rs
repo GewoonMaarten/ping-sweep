@@ -1,20 +1,18 @@
-use std::io::Write;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::{Duration, Instant};
-use std::{mem, ptr};
+use std::mem;
 use std::{mem::MaybeUninit, sync::Arc, thread};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 #[derive(Debug)]
 #[repr(C, packed)]
-pub struct ICMPPacket
-{
+pub struct ICMPPacket {
     pub r#type: u8,
     pub code: u8,
     pub checksum: u16,
     pub id: u16,
     pub seq: u16,
-    pub payload: [u8; ICMP_PAYLOAD_SIZE]
+    pub payload: [u8; ICMP_PAYLOAD_SIZE],
 }
 const IPV4_HEADER_SIZE: usize = 20;
 const ICMP_PAYLOAD_SIZE: usize = 20;
@@ -23,13 +21,13 @@ const IPV4_DATAGRAM_SIZE: usize = IPV4_HEADER_SIZE + ICMP_PACKET_SIZE;
 
 impl ICMPPacket {
     pub fn new(r#type: u8, code: u8, id: u16, seq: u16) -> Self {
-        let mut packet = Self { 
-            r#type, 
-            code, 
-            checksum: 0, 
-            id, 
-            seq, 
-            payload: [0u8; ICMP_PAYLOAD_SIZE] 
+        let mut packet = Self {
+            r#type,
+            code,
+            checksum: 0,
+            id,
+            seq,
+            payload: [0u8; ICMP_PAYLOAD_SIZE],
         };
         packet.checksum = packet.calc_checksum();
         packet
@@ -58,11 +56,11 @@ impl ICMPPacket {
             }
             sum = sum.wrapping_add(u32::from(part));
         }
-    
+
         while (sum >> 16) > 0 {
             sum = (sum & 0xffff) + (sum >> 16);
         }
-    
+
         !sum as u16
     }
 }
@@ -71,82 +69,33 @@ impl From<[u8; IPV4_DATAGRAM_SIZE]> for ICMPPacket {
     fn from(buf: [u8; IPV4_DATAGRAM_SIZE]) -> Self {
         let packet = &buf[IPV4_HEADER_SIZE..IPV4_DATAGRAM_SIZE];
         let payload: [u8; ICMP_PAYLOAD_SIZE] = packet[8..ICMP_PACKET_SIZE].try_into().unwrap();
-        Self { 
-            r#type: packet[0], 
-            code: packet[1], 
-            checksum: (packet[2] as u16) << 8 | packet[3] as u16, 
-            id: (packet[4] as u16) << 8 | packet[5] as u16, 
-            seq: (packet[6] as u16) << 8 | packet[7] as u16, 
-            payload
+        Self {
+            r#type: packet[0],
+            code: packet[1],
+            checksum: (packet[2] as u16) << 8 | packet[3] as u16,
+            id: (packet[4] as u16) << 8 | packet[5] as u16,
+            seq: (packet[6] as u16) << 8 | packet[7] as u16,
+            payload,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct EchoRequest
-{
+pub struct EchoRequest {
     pub request_packet: ICMPPacket,
-    pub response_packet: Option<ICMPPacket>, 
+    pub response_packet: Option<ICMPPacket>,
     pub addr: SocketAddrV4,
     pub send_time: Instant,
     pub round_trip_time: Option<Duration>,
 }
 
-const PKT_BUF_SIZE: usize = 28;
 /// An ICMP header type indicating the message is an Echo request.
 const HDR_TYP_ECHO: u8 = 8;
 /// An ICMP header configuration indicating the Echo message contains an id and sequence number.
 const HDR_CFG_ECHO: u8 = 0;
 
-
-/// Writes an ICMP message header checksum.
-/// See [RFC 792](https://datatracker.ietf.org/doc/html/rfc792) for details.
-fn write_checksum(buf: &mut [u8]) {
-    let mut sum = 0u32;
-    for word in buf.chunks(2) {
-        let mut part = u16::from(word[0]) << 8;
-        if word.len() > 1 {
-            part += u16::from(word[1]);
-        }
-        sum = sum.wrapping_add(u32::from(part));
-    }
-
-    while (sum >> 16) > 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-
-    let sum = !sum as u16;
-
-    buf[2] = (sum >> 8) as u8;
-    buf[3] = (sum & 0xff) as u8;
-}
-
-/// Create an echo request packet.
-pub fn create_echo_pkt(id: u16, seq: u16) -> [u8; PKT_BUF_SIZE] {
-    // Create an echo message
-    let mut buf = [0u8; PKT_BUF_SIZE];
-    buf[0] = HDR_TYP_ECHO;
-    buf[1] = HDR_CFG_ECHO;
-    // buf[2] will contain the checksum
-    // buf[3] will contain the checksum
-    buf[4] = (id >> 8) as u8;
-    buf[5] = id as u8;
-    buf[6] = (seq >> 8) as u8;
-    buf[7] = seq as u8;
-    // Payload is intentionally empty
-
-    // Write the message header's checksum
-    write_checksum(&mut buf);
-
-    buf
-
-}
-
-fn icmp_socket() -> Arc<Socket>
-{
+fn icmp_socket() -> Arc<Socket> {
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)).unwrap();
-    // socket.set_nonblocking(true).unwrap();
-    // socket.set_reuse_port(true).unwrap();
     Arc::new(socket)
 }
 
@@ -154,16 +103,16 @@ fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<usiz
     loop {
         let result: Result<usize, std::io::Error> = socket.send_to(
             &echo_request.request_packet.as_slice(),
-            &socket2::SockAddr::from(echo_request.addr)
+            &socket2::SockAddr::from(echo_request.addr),
         );
         match result {
             Err(e) => match e.raw_os_error() {
                 // Some(105) => (),
-                // Some(11) => (), 
+                // Some(11) => (),
                 _ => {
                     println!("{:?}", e);
-                    return Err(e)
-                },
+                    return Err(e);
+                }
             },
             Ok(_) => return result,
         }
@@ -211,20 +160,18 @@ fn main() {
     let addr = SocketAddrV4::new(ip, 0);
 
     for i in 0..5 {
-        let mut echo_request = EchoRequest{
+        let mut echo_request = EchoRequest {
             request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, i),
             response_packet: None,
             addr: addr,
             send_time: Instant::now(),
-            round_trip_time: None
+            round_trip_time: None,
         };
         let _ = send_ping_to(&socket, &echo_request);
-        let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] = unsafe {
-            MaybeUninit::uninit().assume_init()
-        };
+        let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
+            unsafe { MaybeUninit::uninit().assume_init() };
         let (reply_size, _) = socket.recv_from(&mut receive_buf).unwrap();
-        if reply_size != IPV4_DATAGRAM_SIZE
-        {
+        if reply_size != IPV4_DATAGRAM_SIZE {
             println!("huh?");
         }
         let reply_data = unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
@@ -234,8 +181,6 @@ fn main() {
 
         thread::sleep(Duration::from_millis(500));
     }
-
-
 
     // let socket = Arc::clone(&arc_socket);
     // let receiver = thread::spawn(move || {
