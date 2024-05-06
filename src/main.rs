@@ -1,7 +1,8 @@
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::io::IoSlice;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::{Duration, Instant};
-use std::mem;
+use std::{default, mem};
 use std::{mem::MaybeUninit, sync::Arc, thread};
 
 #[derive(Debug)]
@@ -99,12 +100,20 @@ fn icmp_socket() -> Arc<Socket> {
     Arc::new(socket)
 }
 
-fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<usize, std::io::Error> {
+fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<Vec<usize>, std::io::Error> {
+    const MESSAGE_SIZE: usize = 1024;
+    
+    let packet_slice = echo_request.request_packet.as_slice();
+    let mut msgs = Vec::with_capacity(MESSAGE_SIZE);
+    let mut addrs = Vec::with_capacity(MESSAGE_SIZE);
+
+    for _ in 0..MESSAGE_SIZE {
+        msgs.push(IoSlice::new(&packet_slice));
+        addrs.push(socket2::SockAddr::from(echo_request.addr));
+    }
+
     loop {
-        let result: Result<usize, std::io::Error> = socket.send_to(
-            &echo_request.request_packet.as_slice(),
-            &socket2::SockAddr::from(echo_request.addr),
-        );
+        let result = socket.send_multiple_to(&msgs, &addrs, 0);
         match result {
             Err(e) => match e.raw_os_error() {
                 // Some(105) => (),
@@ -156,30 +165,47 @@ fn main() {
     //     println!("error: {}", error);
     // });
 
-    let ip = "8.8.8.8".parse::<Ipv4Addr>().unwrap();
+    let ip = "127.0.0.1".parse::<Ipv4Addr>().unwrap();
     let addr = SocketAddrV4::new(ip, 0);
 
-    for i in 0..5 {
-        let mut echo_request = EchoRequest {
-            request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, i),
+    let mut now_pps: u64 = 0;
+    let mut last_pps: u64 = 0;
+
+    let interval = Duration::from_secs(1);
+    let mut start = Instant::now();
+    loop {
+        let echo_request = EchoRequest {
+            request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, 1),
             response_packet: None,
             addr: addr,
             send_time: Instant::now(),
             round_trip_time: None,
         };
         let _ = send_ping_to(&socket, &echo_request);
-        let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        let (reply_size, _) = socket.recv_from(&mut receive_buf).unwrap();
-        if reply_size != IPV4_DATAGRAM_SIZE {
-            println!("huh?");
-        }
-        let reply_data = unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
-        echo_request.response_packet = Some(ICMPPacket::from(reply_data));
-        echo_request.round_trip_time = Some(Instant::now().duration_since(echo_request.send_time));
-        println!("time={:?}", echo_request.round_trip_time.unwrap());
+        now_pps += 1024;
 
-        thread::sleep(Duration::from_millis(500));
+
+        // let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
+        //     unsafe { MaybeUninit::uninit().assume_init() };
+        // let (reply_size, _) = socket.recv_from(&mut receive_buf).unwrap();
+        // if reply_size != IPV4_DATAGRAM_SIZE {
+        //     println!("huh?");
+        // }
+        // let reply_data = unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
+        // echo_request.response_packet = Some(ICMPPacket::from(reply_data));
+        // echo_request.round_trip_time = Some(Instant::now().duration_since(echo_request.send_time));
+        // // println!("time={:?}", echo_request.round_trip_time.unwrap());
+
+        // thread::sleep(Duration::from_millis(500));
+        let now = Instant::now();
+        let next_stop = start + interval;
+        if now >= next_stop
+        {
+            let delta_pps = (now_pps - last_pps) as f64 / (now - start).as_secs_f64();
+            last_pps = now_pps;
+            println!("{:.2}K pps", delta_pps / 1000.0);
+            start = next_stop;
+        }
     }
 
     // let socket = Arc::clone(&arc_socket);
@@ -242,16 +268,16 @@ fn main() {
 //     let (tx, mut rx) = tokio::sync::mpsc::channel::<(u8, u8, u8, u8)>(10000);
 
 //     let producer = tokio::spawn(async move {
-//         for a in 0..=255 {
-//             for b in 0..=255 {
-//                 for c in 0..=255 {
-//                     for d in 0..=255 {
-//                         tx.send((a, b, c, d)).await.unwrap();
-//                         pb1.inc(1);
-//                     }
-//                 }
-//             }
-//         }
+        // for a in 0..=255 {
+        //     for b in 0..=255 {
+        //         for c in 0..=255 {
+        //             for d in 0..=255 {
+        //                 tx.send((a, b, c, d)).await.unwrap();
+        //                 pb1.inc(1);
+        //             }
+        //         }
+        //     }
+        // }
 //         pb1.finish();
 //     });
 

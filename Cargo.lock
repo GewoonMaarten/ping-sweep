@@ -222,7 +222,7 @@ name = "ping"
 version = "0.1.0"
 dependencies = [
  "indicatif",
- "socket2",
+ "socket2 0.5.5",
  "tokio",
 ]
 
@@ -288,6 +288,15 @@ checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
 
 [[package]]
 name = "socket2"
+version = "0.5.5"
+source = "git+https://github.com/Tuetuopay/socket2.git?branch=mmsg#8edaeb7f90895ae79405414ea726e146c0aef902"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05ffd9c0a93b7543e062e759284fcf5f5e3b098501104bfbdde4d404db792871"
@@ -321,7 +330,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.5.6",
  "tokio-macros",
  "windows-sys 0.48.0",
 ]
