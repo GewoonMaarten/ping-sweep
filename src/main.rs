@@ -96,7 +96,7 @@ const HDR_TYP_ECHO: u8 = 8;
 const HDR_CFG_ECHO: u8 = 0;
 
 fn icmp_socket() -> Arc<Socket> {
-    let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)).unwrap();
+    let socket: Socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)).unwrap();
     Arc::new(socket)
 }
 
@@ -123,80 +123,55 @@ fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<Vec<
                     return Err(e);
                 }
             },
-            Ok(_) => return result,
+            Ok(e) => {
+                if e.len() != MESSAGE_SIZE
+                {
+                    panic!("holdup");
+                }
+                return Ok(e);
+            },
         }
     }
 }
 
 fn main() {
-    const IP_COUNT: u64 = 256 * 256 * 256 * 256;
+    let (pps_tx, pps_rx) = std::sync::mpsc::channel();
 
-    let socket = Arc::clone(&icmp_socket());
-    // let sender = thread::spawn(move || {
-    //     println!("socket size: {}", socket.send_buffer_size().unwrap());
-    //     let pb = indicatif::ProgressBar::new(IP_COUNT);
-    //     pb.set_style(
-    //         indicatif::ProgressStyle::with_template(
-    //             "{spinner} [{elapsed_precise}] [{bar}] ({pos}/{len}, {per_sec}, ETA {eta})",
-    //         )
-    //         .unwrap()
-    //     );
-    //     let mut success: u32 = 0;
-    //     let mut error: u32 = 0;
-    //     for a in 0..=255 {
-    //         for b in 0..=255 {
-    //             for c in 0..=255 {
-    //                 for d in 0..=255 {
-    //                     let result = send_ping_to(&socket, (a, b, c, d));
-    //                     match result {
-    //                         Err(e) => {
-    //                             println!("{:?}", e);
-    //                             error += 1;
-    //                         },
-    //                         Ok(_) => success += 1,
-    //                     }
-    //                     pb.inc(1);
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     pb.finish_with_message("done");
-    //     println!("sucess: {}", success);
-    //     println!("error: {}", error);
-    // });
+    let mut threads = vec![];
+    for _ in 0..5
+    {        
+        let sender_tx = std::sync::mpsc::Sender::clone(&pps_tx);
 
-    let ip = "127.0.0.1".parse::<Ipv4Addr>().unwrap();
-    let addr = SocketAddrV4::new(ip, 0);
+        let socket = Arc::clone(&icmp_socket());
+        let sender_socket = socket.clone();
+        let sender = thread::spawn(move || {    
+            let ip = "127.0.0.1".parse::<Ipv4Addr>().unwrap();
+            let addr = SocketAddrV4::new(ip, 0);
+        
+            loop {
+                let echo_request = EchoRequest {
+                    request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, 1),
+                    response_packet: None,
+                    addr: addr,
+                    send_time: Instant::now(),
+                    round_trip_time: None,
+                };
+                let _ = send_ping_to(&sender_socket, &echo_request);
+                sender_tx.send(1024).unwrap();
+            }
+        });
+        threads.push(sender);
+    }
 
+    // Calculate packet statistics
     let mut now_pps: u64 = 0;
     let mut last_pps: u64 = 0;
-
     let interval = Duration::from_secs(1);
     let mut start = Instant::now();
-    loop {
-        let echo_request = EchoRequest {
-            request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, 1),
-            response_packet: None,
-            addr: addr,
-            send_time: Instant::now(),
-            round_trip_time: None,
-        };
-        let _ = send_ping_to(&socket, &echo_request);
-        now_pps += 1024;
+    loop 
+    {
+        now_pps += pps_rx.recv().unwrap();
 
-
-        // let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
-        //     unsafe { MaybeUninit::uninit().assume_init() };
-        // let (reply_size, _) = socket.recv_from(&mut receive_buf).unwrap();
-        // if reply_size != IPV4_DATAGRAM_SIZE {
-        //     println!("huh?");
-        // }
-        // let reply_data = unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
-        // echo_request.response_packet = Some(ICMPPacket::from(reply_data));
-        // echo_request.round_trip_time = Some(Instant::now().duration_since(echo_request.send_time));
-        // // println!("time={:?}", echo_request.round_trip_time.unwrap());
-
-        // thread::sleep(Duration::from_millis(500));
         let now = Instant::now();
         let next_stop = start + interval;
         if now >= next_stop
@@ -207,7 +182,20 @@ fn main() {
             start = next_stop;
         }
     }
-
+        
+        
+                // let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
+                //     unsafe { MaybeUninit::uninit().assume_init() };
+                // let (reply_size, _) = socket.recv_from(&mut receive_buf).unwrap();
+                // if reply_size != IPV4_DATAGRAM_SIZE {
+                //     println!("huh?");
+                // }
+                // let reply_data = unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
+                // echo_request.response_packet = Some(ICMPPacket::from(reply_data));
+                // echo_request.round_trip_time = Some(Instant::now().duration_since(echo_request.send_time));
+                // // println!("time={:?}", echo_request.round_trip_time.unwrap());
+        
+                // thread::sleep(Duration::from_millis(500));
     // let socket = Arc::clone(&arc_socket);
     // let receiver = thread::spawn(move || {
     //     let mut file = std::fs::OpenOptions::new().create(true).append(true).open("pings.txt").unwrap();
