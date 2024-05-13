@@ -1,6 +1,7 @@
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::io::IoSlice;
+use socket2::{Domain, MaybeUninitSlice, MmsgHdrMut, MsgHdrMut, Protocol, SockAddr, Socket, Type};
+use std::io::{Error, IoSlice};
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 use std::{default, mem};
 use std::{mem::MaybeUninit, sync::Arc, thread};
@@ -85,7 +86,6 @@ impl From<[u8; IPV4_DATAGRAM_SIZE]> for ICMPPacket {
 pub struct EchoRequest {
     pub request_packet: ICMPPacket,
     pub response_packet: Option<ICMPPacket>,
-    pub addr: SocketAddrV4,
     pub send_time: Instant,
     pub round_trip_time: Option<Duration>,
 }
@@ -100,88 +100,189 @@ fn icmp_socket() -> Arc<Socket> {
     Arc::new(socket)
 }
 
-fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<Vec<usize>, std::io::Error> {
-    const MESSAGE_SIZE: usize = 1024;
+// fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<Vec<usize>, std::io::Error> {
+//     const MESSAGE_SIZE: usize = 1024;
     
-    let packet_slice = echo_request.request_packet.as_slice();
-    let mut msgs = Vec::with_capacity(MESSAGE_SIZE);
-    let mut addrs = Vec::with_capacity(MESSAGE_SIZE);
+//     let packet_slice = echo_request.request_packet.as_slice();
+//     let mut msgs = Vec::with_capacity(MESSAGE_SIZE);
+//     let mut addrs = Vec::with_capacity(MESSAGE_SIZE);
 
-    for _ in 0..MESSAGE_SIZE {
-        msgs.push(IoSlice::new(&packet_slice));
-        addrs.push(socket2::SockAddr::from(echo_request.addr));
-    }
+//     for _ in 0..MESSAGE_SIZE {
+//         msgs.push(IoSlice::new(&packet_slice));
+//         addrs.push(socket2::SockAddr::from(echo_request.addr));
+//     }
 
-    loop {
-        let result = socket.send_multiple_to(&msgs, &addrs, 0);
-        match result {
-            Err(e) => match e.raw_os_error() {
-                // Some(105) => (),
-                // Some(11) => (),
-                _ => {
-                    println!("{:?}", e);
-                    return Err(e);
-                }
-            },
-            Ok(e) => {
-                if e.len() != MESSAGE_SIZE
-                {
-                    panic!("holdup");
-                }
-                return Ok(e);
-            },
-        }
-    }
-}
+//     loop {
+//         let result = socket.send_multiple_to(&msgs, &addrs, 0);
+//         match result {
+//             Err(e) => match e.raw_os_error() {
+//                 // Some(105) => (),
+//                 // Some(11) => (),
+//                 _ => {
+//                     println!("{:?}", e);
+//                     return Err(e);
+//                 }
+//             },
+//             Ok(e) => {
+//                 if e.len() != MESSAGE_SIZE
+//                 {
+//                     panic!("holdup");
+//                 }
+//                 return Ok(e);
+//             },
+//         }
+//     }
+// }
 
 fn main() {
-    let (pps_tx, pps_rx) = std::sync::mpsc::channel();
+    const BATCH_SIZE: usize = 1024;
+    const N_THREADS: usize = 5;
 
-    let mut threads = vec![];
-    for _ in 0..5
-    {        
+    let (ip_tx, ip_rx) = mpsc::sync_channel::<Vec<socket2::SockAddr>>(N_THREADS);
+    let (pps_tx, pps_rx) = mpsc::channel();
+
+    let ip_rx = Arc::new(Mutex::new(ip_rx));
+
+    for _ in 0..N_THREADS
+    {
+        let sender_ip_rx = Arc::clone(&ip_rx);
         let sender_tx = std::sync::mpsc::Sender::clone(&pps_tx);
 
         let socket = Arc::clone(&icmp_socket());
         let sender_socket = socket.clone();
-        let sender = thread::spawn(move || {    
-            let ip = "127.0.0.1".parse::<Ipv4Addr>().unwrap();
-            let addr = SocketAddrV4::new(ip, 0);
-        
-            loop {
-                let echo_request = EchoRequest {
-                    request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, 1),
-                    response_packet: None,
-                    addr: addr,
-                    send_time: Instant::now(),
-                    round_trip_time: None,
-                };
-                let _ = send_ping_to(&sender_socket, &echo_request);
-                sender_tx.send(1024).unwrap();
+        let _sender = thread::spawn(move || {    
+            loop 
+            {
+                if let Ok(batch) = sender_ip_rx.lock().unwrap().recv()
+                {
+                    let echo_request = EchoRequest {
+                        request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, 1),
+                        response_packet: None,
+                        send_time: Instant::now(),
+                        round_trip_time: None,
+                    };
+                    let packet_slice = echo_request.request_packet.as_slice();
+                    let mut msgs = Vec::with_capacity(BATCH_SIZE);                
+                    for _ in 0..BATCH_SIZE {
+                        msgs.push(IoSlice::new(&packet_slice));
+                    }
+                
+                    loop {
+                        let result = sender_socket.send_multiple_to(&msgs, &batch, 0);
+                        match result {
+                            Err(e) => match e.raw_os_error() {
+                                Some(105) => (),
+                                // Some(11) => (),
+                                _ => {
+                                    panic!("{:?}", e);
+                                }
+                            },
+                            Ok(e) => {
+                                if e.len() != msgs.len()
+                                {
+                                    msgs.drain(0..e.len());
+                                }
+                                else {
+                                    break;
+                                }
+
+                            },
+                        }
+                    }
+                    sender_tx.send(BATCH_SIZE).unwrap();
+                }
             }
         });
-        threads.push(sender);
+
+        // let receiver_socket = socket.clone();
+        // let _receiver = thread::spawn(move || {
+        //     // let mut msgs = Vec::with_capacity(BATCH_SIZE);                
+        //     // for _ in 0..BATCH_SIZE {
+        //     //     let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] = };
+        //     //     msgs.push();
+        //     // }
+
+        //     // let mut msgs = Vec::with_capacity(BATCH_SIZE);
+
+        //     // for _ in 0..BATCH_SIZE {
+        //     //     msgs.push(vec![0u8; IPV4_DATAGRAM_SIZE]);
+        //     // }
+
+        //     let mut x = (0..BATCH_SIZE)
+        //         .into_iter()
+        //         .map(|_| MaybeUninitSlice::new(&mut unsafe { 
+        //             MaybeUninit::<[MaybeUninit<u8>; IPV4_DATAGRAM_SIZE]>::uninit().assume_init()
+        //          }) )
+        //         .collect::<Vec<MaybeUninitSlice>>();
+                
+        //     // let mut msgs_slice: Vec<_> = msgs.iter_mut().map(|buf| buf.as_mut_slice()).collect();
+        
+
+        //     let r = receiver_socket.recv_multiple_from(&mut x, 0).unwrap();
+
+        // });
     }
+
+    // Ip generator
+    thread::spawn(move ||
+    {
+        let total_ips = 256u64.pow(4);
+        let total_batches = (total_ips as usize + BATCH_SIZE - 1) / BATCH_SIZE;
+        println!("Total batches: {}", total_batches);
+
+        let mut current_batch = Vec::new();
+        for a in 0..=255 {
+            for b in 0..=255 {
+                for c in 0..=255 {
+                    for d in 0..=255 {
+                        let ip = Ipv4Addr::new(a, b, c, d);
+                        let addr = SocketAddrV4::new(ip, 0);
+                        let addr = socket2::SockAddr::from(addr);
+                        current_batch.push(addr);
+                        if current_batch.len() >= BATCH_SIZE {
+                            ip_tx.send(current_batch.clone()).unwrap();
+                            current_batch.clear();
+                        }
+                    }
+                }
+            }
+        }
+    
+        // Send remaining IPs
+        if !current_batch.is_empty() {
+            ip_tx.send(current_batch).unwrap();
+        }
+    });
+
+    let total_ips = 256u64.pow(4);
 
     // Calculate packet statistics
     let mut now_pps: u64 = 0;
     let mut last_pps: u64 = 0;
     let interval = Duration::from_secs(1);
     let mut start = Instant::now();
-    loop 
-    {
-        now_pps += pps_rx.recv().unwrap();
 
+    while let Ok(pps) = pps_rx.recv()
+    {
+        // println!("received: {}", pps);
+        now_pps += pps as u64;        
         let now = Instant::now();
         let next_stop = start + interval;
         if now >= next_stop
         {
             let delta_pps = (now_pps - last_pps) as f64 / (now - start).as_secs_f64();
             last_pps = now_pps;
-            println!("{:.2}K pps", delta_pps / 1000.0);
+            println!(
+                "{:.2}K pps, {:.2}M total packets, {:.4}% sent, {:.1} min until complete",
+                delta_pps / 1000.0,
+                now_pps as f64 / 1000.0 / 1000.0,
+                (now_pps as f64 / total_ips as f64) * 100.0,
+                ((total_ips - now_pps) as f64 / delta_pps) / 60.0
+            );
             start = next_stop;
         }
     }
+
         
         
                 // let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
