@@ -1,9 +1,10 @@
-use socket2::{Domain, MaybeUninitSlice, MmsgHdrMut, MsgHdrMut, Protocol, SockAddr, Socket, Type};
-use std::io::{Error, IoSlice};
+use socket2::{Domain, Protocol, Socket, Type};
+use std::fs::OpenOptions;
+use std::io::{IoSlice, Seek, Write};
+use std::mem;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
-use std::{default, mem};
 use std::{mem::MaybeUninit, sync::Arc, thread};
 
 #[derive(Debug)]
@@ -67,19 +68,26 @@ impl ICMPPacket {
     }
 }
 
-impl From<[u8; IPV4_DATAGRAM_SIZE]> for ICMPPacket {
-    fn from(buf: [u8; IPV4_DATAGRAM_SIZE]) -> Self {
+impl TryFrom<[u8; IPV4_DATAGRAM_SIZE]> for ICMPPacket {
+    fn try_from(buf: [u8; IPV4_DATAGRAM_SIZE]) -> Result<ICMPPacket, String> {
         let packet = &buf[IPV4_HEADER_SIZE..IPV4_DATAGRAM_SIZE];
         let payload: [u8; ICMP_PAYLOAD_SIZE] = packet[8..ICMP_PACKET_SIZE].try_into().unwrap();
-        Self {
+        let packet = Self {
             r#type: packet[0],
             code: packet[1],
             checksum: (packet[2] as u16) << 8 | packet[3] as u16,
             id: (packet[4] as u16) << 8 | packet[5] as u16,
             seq: (packet[6] as u16) << 8 | packet[7] as u16,
             payload,
+        };
+        if packet.code == 0 && packet.r#type == 0 {
+            Ok(packet)
+        } else {
+            Err("Expected code and/or type to be 0".to_string())
         }
     }
+
+    type Error = String;
 }
 
 #[derive(Debug)]
@@ -100,61 +108,24 @@ fn icmp_socket() -> Arc<Socket> {
     Arc::new(socket)
 }
 
-// fn send_ping_to(socket: &Arc<Socket>, echo_request: &EchoRequest) -> Result<Vec<usize>, std::io::Error> {
-//     const MESSAGE_SIZE: usize = 1024;
-    
-//     let packet_slice = echo_request.request_packet.as_slice();
-//     let mut msgs = Vec::with_capacity(MESSAGE_SIZE);
-//     let mut addrs = Vec::with_capacity(MESSAGE_SIZE);
-
-//     for _ in 0..MESSAGE_SIZE {
-//         msgs.push(IoSlice::new(&packet_slice));
-//         addrs.push(socket2::SockAddr::from(echo_request.addr));
-//     }
-
-//     loop {
-//         let result = socket.send_multiple_to(&msgs, &addrs, 0);
-//         match result {
-//             Err(e) => match e.raw_os_error() {
-//                 // Some(105) => (),
-//                 // Some(11) => (),
-//                 _ => {
-//                     println!("{:?}", e);
-//                     return Err(e);
-//                 }
-//             },
-//             Ok(e) => {
-//                 if e.len() != MESSAGE_SIZE
-//                 {
-//                     panic!("holdup");
-//                 }
-//                 return Ok(e);
-//             },
-//         }
-//     }
-// }
-
 fn main() {
     const BATCH_SIZE: usize = 1024;
-    const N_THREADS: usize = 5;
+    const N_THREADS: usize = 1;
 
     let (ip_tx, ip_rx) = mpsc::sync_channel::<Vec<socket2::SockAddr>>(N_THREADS);
     let (pps_tx, pps_rx) = mpsc::channel();
 
     let ip_rx = Arc::new(Mutex::new(ip_rx));
 
-    for _ in 0..N_THREADS
-    {
+    for i in 0..N_THREADS {
         let sender_ip_rx = Arc::clone(&ip_rx);
         let sender_tx = std::sync::mpsc::Sender::clone(&pps_tx);
 
         let socket = Arc::clone(&icmp_socket());
         let sender_socket = socket.clone();
-        let _sender = thread::spawn(move || {    
-            loop 
-            {
-                if let Ok(batch) = sender_ip_rx.lock().unwrap().recv()
-                {
+        let _sender = thread::spawn(move || {
+            loop {
+                if let Ok(batch) = sender_ip_rx.lock().unwrap().recv() {
                     let echo_request = EchoRequest {
                         request_packet: ICMPPacket::new(HDR_TYP_ECHO, HDR_CFG_ECHO, 1, 1),
                         response_packet: None,
@@ -162,31 +133,28 @@ fn main() {
                         round_trip_time: None,
                     };
                     let packet_slice = echo_request.request_packet.as_slice();
-                    let mut msgs = Vec::with_capacity(BATCH_SIZE);                
+                    let mut msgs = Vec::with_capacity(BATCH_SIZE);
                     for _ in 0..BATCH_SIZE {
                         msgs.push(IoSlice::new(&packet_slice));
                     }
-                
+
                     loop {
                         let result = sender_socket.send_multiple_to(&msgs, &batch, 0);
                         match result {
                             Err(e) => match e.raw_os_error() {
-                                Some(105) => (),
+                                Some(105) => continue,
                                 // Some(11) => (),
                                 _ => {
                                     panic!("{:?}", e);
                                 }
                             },
                             Ok(e) => {
-                                if e.len() != msgs.len()
-                                {
+                                if e.len() != msgs.len() {
                                     msgs.drain(0..e.len());
-                                }
-                                else {
+                                } else {
                                     break;
                                 }
-
-                            },
+                            }
                         }
                     }
                     sender_tx.send(BATCH_SIZE).unwrap();
@@ -194,42 +162,43 @@ fn main() {
             }
         });
 
-        // let receiver_socket = socket.clone();
-        // let _receiver = thread::spawn(move || {
-        //     // let mut msgs = Vec::with_capacity(BATCH_SIZE);                
-        //     // for _ in 0..BATCH_SIZE {
-        //     //     let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] = };
-        //     //     msgs.push();
-        //     // }
-
-        //     // let mut msgs = Vec::with_capacity(BATCH_SIZE);
-
-        //     // for _ in 0..BATCH_SIZE {
-        //     //     msgs.push(vec![0u8; IPV4_DATAGRAM_SIZE]);
-        //     // }
-
-        //     let mut x = (0..BATCH_SIZE)
-        //         .into_iter()
-        //         .map(|_| MaybeUninitSlice::new(&mut unsafe { 
-        //             MaybeUninit::<[MaybeUninit<u8>; IPV4_DATAGRAM_SIZE]>::uninit().assume_init()
-        //          }) )
-        //         .collect::<Vec<MaybeUninitSlice>>();
-                
-        //     // let mut msgs_slice: Vec<_> = msgs.iter_mut().map(|buf| buf.as_mut_slice()).collect();
-        
-
-        //     let r = receiver_socket.recv_multiple_from(&mut x, 0).unwrap();
-
-        // });
+        let receiver_socket = socket.clone();
+        let _receiver = thread::spawn(move || {
+            let mut f = OpenOptions::new()
+                .append(true)
+                .create(true) // Optionally create the file if it doesn't already exist
+                .open(format!("pings_t{}.txt", i))
+                .expect("Unable to open file");
+            loop {
+                let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
+                    unsafe { MaybeUninit::uninit().assume_init() };
+                let (reply_size, addr) = receiver_socket.recv_from(&mut receive_buf).unwrap();
+                if reply_size != IPV4_DATAGRAM_SIZE {
+                    println!("huh?");
+                }
+                let reply_data =
+                    unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
+                if let Ok(_) = ICMPPacket::try_from(reply_data) {
+                    let sock_addr = addr.as_socket_ipv4().unwrap();
+                    let ip = sock_addr.ip();
+                    f.write_all(format!("{:?}\n", ip).as_bytes())
+                        .expect("Unable to write data");
+                }
+            }
+        });
     }
 
     // Ip generator
-    thread::spawn(move ||
-    {
+    thread::spawn(move || {
         let total_ips = 256u64.pow(4);
         let total_batches = (total_ips as usize + BATCH_SIZE - 1) / BATCH_SIZE;
         println!("Total batches: {}", total_batches);
-
+        let mut f = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open("pings_gen.txt")
+            .expect("Unable to open file");
         let mut current_batch = Vec::new();
         for a in 0..=255 {
             for b in 0..=255 {
@@ -242,12 +211,17 @@ fn main() {
                         if current_batch.len() >= BATCH_SIZE {
                             ip_tx.send(current_batch.clone()).unwrap();
                             current_batch.clear();
+
+                            f.seek(std::io::SeekFrom::Start(0)).unwrap();
+                            f.write_all(format!("{}.{}.{}.{}", a, b, c, d).as_bytes())
+                                .expect("Unable to write data");
+                            f.flush().unwrap();
                         }
                     }
                 }
             }
         }
-    
+
         // Send remaining IPs
         if !current_batch.is_empty() {
             ip_tx.send(current_batch).unwrap();
@@ -262,14 +236,12 @@ fn main() {
     let interval = Duration::from_secs(1);
     let mut start = Instant::now();
 
-    while let Ok(pps) = pps_rx.recv()
-    {
+    while let Ok(pps) = pps_rx.recv() {
         // println!("received: {}", pps);
-        now_pps += pps as u64;        
+        now_pps += pps as u64;
         let now = Instant::now();
         let next_stop = start + interval;
-        if now >= next_stop
-        {
+        if now >= next_stop {
             let delta_pps = (now_pps - last_pps) as f64 / (now - start).as_secs_f64();
             last_pps = now_pps;
             println!(
@@ -282,153 +254,4 @@ fn main() {
             start = next_stop;
         }
     }
-
-        
-        
-                // let mut receive_buf: [MaybeUninit<u8>; IPV4_DATAGRAM_SIZE] =
-                //     unsafe { MaybeUninit::uninit().assume_init() };
-                // let (reply_size, _) = socket.recv_from(&mut receive_buf).unwrap();
-                // if reply_size != IPV4_DATAGRAM_SIZE {
-                //     println!("huh?");
-                // }
-                // let reply_data = unsafe { mem::transmute::<_, [u8; IPV4_DATAGRAM_SIZE]>(receive_buf) };
-                // echo_request.response_packet = Some(ICMPPacket::from(reply_data));
-                // echo_request.round_trip_time = Some(Instant::now().duration_since(echo_request.send_time));
-                // // println!("time={:?}", echo_request.round_trip_time.unwrap());
-        
-                // thread::sleep(Duration::from_millis(500));
-    // let socket = Arc::clone(&arc_socket);
-    // let receiver = thread::spawn(move || {
-    //     let mut file = std::fs::OpenOptions::new().create(true).append(true).open("pings.txt").unwrap();
-    //     loop
-    //     {
-    //         let mut receive_buf = [MaybeUninit::uninit(); 1024];
-    //         let result = socket.recv_from(&mut receive_buf);
-    //         match result
-    //         {
-    //             Err(_) => return,
-    //             Ok(a) => {
-    //                 writeln!(file, "{:?}", a.1.as_socket().unwrap().ip());
-    //             }
-    //         };
-    //     }
-    // });
-
-    // sender.join().unwrap();
-    // receiver.join().unwrap();
-
-    // let result = socket.recv_from(&mut receive_buf).unwrap();
-    // println!(
-    //     "received {:?} bytes of data from {:?}",
-    //     result.0,
-    //     result.1.as_socket().unwrap().ip()
-    // );
 }
-
-// use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-// use socket2::{Domain, Protocol, Socket, Type};
-// use std::net::Ipv4Addr;
-// use std::net::SocketAddrV4;
-// use tokio::fs::OpenOptions;
-// use tokio::io::unix::AsyncFd;
-// use tokio::io::{AsyncWriteExt, Interest};
-
-// #[tokio::main]
-// async fn main() -> std::io::Result<()> {
-//     const IP_COUNT: u64 = 256 * 256 * 256 * 256;
-
-//     let multi_progress = MultiProgress::new();
-//     let style = ProgressStyle::with_template(
-//         "{spinner} [{elapsed_precise}] [{bar}] ({pos}/{len}, {per_sec}, ETA {eta})",
-//     )
-//     .unwrap();
-//     let pb1 = multi_progress.add(ProgressBar::new(IP_COUNT));
-//     pb1.set_style(style.clone());
-//     let pb2 = multi_progress.add(ProgressBar::new(IP_COUNT));
-//     pb2.set_style(style.clone());
-//     let pb3 = multi_progress.add(ProgressBar::new(IP_COUNT));
-//     pb3.set_style(style.clone());
-
-//     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)).unwrap();
-//     socket.set_nonblocking(true).unwrap();
-//     let socket = AsyncFd::new(socket).unwrap();
-//     let socket = Arc::new(socket);
-
-//     let (tx, mut rx) = tokio::sync::mpsc::channel::<(u8, u8, u8, u8)>(10000);
-
-//     let producer = tokio::spawn(async move {
-        // for a in 0..=255 {
-        //     for b in 0..=255 {
-        //         for c in 0..=255 {
-        //             for d in 0..=255 {
-        //                 tx.send((a, b, c, d)).await.unwrap();
-        //                 pb1.inc(1);
-        //             }
-        //         }
-        //     }
-        // }
-//         pb1.finish();
-//     });
-
-//     let socket1 = socket.clone();
-//     let worker = tokio::spawn(async move {
-//         while let Some(ip) = rx.recv().await {
-//             let ip: Ipv4Addr = Ipv4Addr::new(ip.0, ip.1, ip.2, ip.3);
-//             let addr: SocketAddrV4 = SocketAddrV4::new(ip, 0);
-//             let packet = create_echo_pkt(1, 2);
-
-//             loop {
-//                 let guard = socket1.ready(Interest::WRITABLE).await.unwrap();
-//                 if guard.ready().is_writable() {
-//                     let result = socket1
-//                         .async_io(Interest::WRITABLE, |socket| {
-//                             socket.send_to(&packet, &socket2::SockAddr::from(addr))
-//                         })
-//                         .await;
-//                     match result {
-//                         Err(e) => match e.raw_os_error() {
-//                             // Some(105) => println!("{:?}", e),
-//                             _ => (),
-//                         },
-//                         Ok(_) => {
-//                             pb2.inc(1);
-//                             break;
-//                         }
-//                     };
-//                 }
-//             }
-//         }
-//         pb2.finish();
-//     });
-
-//     let socket2 = socket.clone();
-//     let writer = tokio::spawn(async move {
-//         let mut file = OpenOptions::new()
-//             .append(true)
-//             .create(true)
-//             .open("pings_2.txt")
-//             .await
-//             .unwrap();
-
-//         loop {
-//             let mut buf = [MaybeUninit::uninit(); 1024];
-//             let result = socket2
-//                 .async_io(Interest::READABLE, |socket| socket.recv_from(&mut buf))
-//                 .await;
-//             match result {
-//                 Err(_) => return,
-//                 Ok(a) => {
-//                     let data = format!("{:?}\n", a.1.as_socket().unwrap().ip());
-//                     file.write_all(data.as_bytes()).await.unwrap();
-//                     pb3.inc(1);
-//                 }
-//             }
-//         }
-//     });
-
-//     producer.await.unwrap();
-//     worker.await.unwrap();
-//     writer.await.unwrap();
-
-//     Ok(())
-// }

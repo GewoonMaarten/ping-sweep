@@ -6,6 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-socket2 = {git = "https://github.com/Tuetuopay/socket2.git", branch = "mmsg", features = ["all"]}
-indicatif = "0.17.8"
-tokio = { version = "1", features = ["full"] }
+socket2 = { git = "https://github.com/Tuetuopay/socket2.git", branch = "mmsg", features = [
+    "all",
+] }
