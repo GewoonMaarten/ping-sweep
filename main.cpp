@@ -1,6 +1,8 @@
 #include <arpa/inet.h>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -74,10 +76,10 @@ public:
         identifier = htons(*reinterpret_cast<const uint16_t *>(buffer + 4));
         sequence_number = htons(*reinterpret_cast<const uint16_t *>(buffer + 6));
 
-        if (!is_correct_checksum())
-        {
-            throw std::runtime_error("Invalid checksum in ICMP header");
-        }
+        // if (!is_correct_checksum())
+        // {
+        //     throw std::runtime_error("Invalid checksum in ICMP header");
+        // }
     }
 
     void set_sequence_number(uint8_t t_sequence_number)
@@ -219,15 +221,13 @@ public:
         for (auto it = map.begin(); it != map.end(); ) {
             if (now - it->second.send_time > timeout_duration) {
                 if (it->second.retries >= max_retries) {
-                    std::cout << "Max retries reached for sequence number: " << it->first
-                              << " to IP: " << it->second.ip << std::endl;
+                    std::cout << "Max retries reached for IP: " << it->second.ip << std::endl;
                     it = map.erase(it);
                 } else {
                     // Increment retry count and update send time
                     it->second.retries++;
                     it->second.send_time = now;
-                    std::cout << "Retrying sequence number: " << it->first
-                              << " to IP: " << it->second.ip
+                    std::cout << "Retrying to IP: " << it->second.ip
                               << " (retry " << it->second.retries << ")" << std::endl;
                     ++it;
                 }
@@ -236,18 +236,26 @@ public:
             }
         }
     }
+
+    size_t get_size() {
+        return map.size();
+    }
 };
 
 void sender_thread(int socket_fd, ThreadSafeMap &requests) {
-    for (uint32_t i = 0; i <= UINT32_MAX; i++) {
+    for (uint32_t i = 0; i <= 0; i++) {
         IcmpHeader icmp_request_data{0x1234, 0};
-        SockAddr sock_addr{i, 0};
+        SockAddr sock_addr{"8.8.8.8", 0};
         MessageHeader request_message_header{sock_addr, icmp_request_data};
         msghdr request_msghdr = request_message_header.to_native();
 
         ssize_t sent_bytes = sendmsg(socket_fd, &request_msghdr, 0);
         if (sent_bytes < 0) {
             perror("sendmsg");
+            if (errno == ENOBUFS) {
+                std::this_thread::sleep_for(100ms);
+                continue;
+            }
             continue;
         }
 
@@ -280,10 +288,16 @@ void receiver_thread(int socket_fd, ThreadSafeMap &requests) {
             MessageHeader response_message_header = MessageHeader::from_native(response_msghdr);
             uint32_t ip = response_message_header.sock_addr.get_sockaddr().sin_addr.s_addr;
             if (requests.remove(ip)) {
-                std::cout << "Received response for sequence number: " << ip << std::endl;
+                std::cout << "Received response for IP: " << ip << std::endl;
             }
+
         } catch (const std::exception &e) {
             std::cerr << "Error processing response: " << e.what() << std::endl;
+        }
+
+        if (requests.get_size() == 0)
+        {
+            break;
         }
     }
 }
@@ -302,10 +316,14 @@ int main() {
      std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
 
      // Periodically check for timeouts
-     while (true) {
-         requests.check_timeouts(5s, 3); // Adjust timeout duration as needed
-         std::this_thread::sleep_for(30s);
-     }
+     // while (true) {
+     //     requests.check_timeouts(5s, 3); // Adjust timeout duration as needed
+     //     std::this_thread::sleep_for(5s);
+     //     if (requests.get_size() == 0)
+     //     {
+     //         break;
+     //     }
+     // }
 
      sender.join();
      receiver.join();
