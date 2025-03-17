@@ -243,21 +243,50 @@ public:
 };
 
 void sender_thread(int socket_fd, ThreadSafeMap &requests) {
-    for (uint32_t i = 0; i <= UINT32_MAX; i++) {
-        IcmpHeader icmp_request_data{0x1234, 0};
-        SockAddr sock_addr{i, 0};
-        MessageHeader request_message_header{sock_addr, icmp_request_data};
-        msghdr request_msghdr = request_message_header.to_native();
+    const size_t BATCH_SIZE = 64;  // Number of messages per batch
+    std::vector<mmsghdr> msgvec(BATCH_SIZE);
+    std::vector<MessageHeader> headers(BATCH_SIZE);
+    std::vector<IcmpHeader> icmp_headers(BATCH_SIZE);
+    std::vector<SockAddr> sock_addrs(BATCH_SIZE);
 
-        ssize_t sent_bytes = sendmsg(socket_fd, &request_msghdr, 0);
-        if (sent_bytes < 0) {
-            perror("sendmsg");
+    uint32_t current_ip = 0;
+    
+    while (current_ip <= UINT32_MAX) {
+        // Prepare a batch of messages
+        size_t messages_in_batch = 0;
+        for (; messages_in_batch < BATCH_SIZE && current_ip <= UINT32_MAX; 
+             messages_in_batch++, current_ip++) {
+            icmp_headers[messages_in_batch] = IcmpHeader{0x1234, 0};
+            sock_addrs[messages_in_batch] = SockAddr{current_ip, 0};
+            headers[messages_in_batch] = MessageHeader{sock_addrs[messages_in_batch], 
+                                                     icmp_headers[messages_in_batch]};
+            
+            msgvec[messages_in_batch].msg_hdr = headers[messages_in_batch].to_native();
+            msgvec[messages_in_batch].msg_len = 0;  // Will be set by sendmmsg
+        }
+
+        // Send the batch
+        int sent_count = sendmmsg(socket_fd, msgvec.data(), messages_in_batch, 0);
+        if (sent_count < 0) {
+            perror("sendmmsg");
             if (errno == ENOBUFS) {
                 std::this_thread::sleep_for(100ms);
                 continue;
             }
+            break;
         }
-        requests.add(i, std::chrono::steady_clock::now());
+
+        // Add successfully sent messages to requests map
+        auto now = std::chrono::steady_clock::now();
+        for (int i = 0; i < sent_count; i++) {
+            uint32_t ip = sock_addrs[i].get_sockaddr().sin_addr.s_addr;
+            requests.add(ip, now);
+        }
+
+        // If we didn't send the full batch, adjust current_ip
+        if (sent_count < static_cast<int>(messages_in_batch)) {
+            current_ip -= (messages_in_batch - sent_count);
+        }
     }
 }
 
