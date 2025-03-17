@@ -189,15 +189,22 @@ public:
     }
 };
 
+struct RequestInfo {
+    std::chrono::steady_clock::time_point send_time;
+    uint32_t ip;
+    int retries;
+};
+
 class ThreadSafeMap {
 private:
-    std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> map;
+    std::unordered_map<uint32_t, RequestInfo> map;
     std::mutex mtx;
+    const int max_retries = 3;
 
 public:
-    void add(uint32_t sequence_number, std::chrono::steady_clock::time_point send_time) {
+    void add(uint32_t sequence_number, uint32_t ip, std::chrono::steady_clock::time_point send_time) {
         std::lock_guard<std::mutex> lock(mtx);
-        map[sequence_number] = send_time;
+        map[sequence_number] = {send_time, ip, 0};
     }
 
     bool remove(uint32_t sequence_number) {
@@ -208,10 +215,22 @@ public:
     void check_timeouts(std::chrono::seconds timeout_duration) {
         std::lock_guard<std::mutex> lock(mtx);
         auto now = std::chrono::steady_clock::now();
+        
         for (auto it = map.begin(); it != map.end(); ) {
-            if (now - it->second > timeout_duration) {
-                std::cout << "Timeout for sequence number: " << it->first << std::endl;
-                it = map.erase(it);
+            if (now - it->second.send_time > timeout_duration) {
+                if (it->second.retries >= max_retries) {
+                    std::cout << "Max retries reached for sequence number: " << it->first 
+                              << " to IP: " << it->second.ip << std::endl;
+                    it = map.erase(it);
+                } else {
+                    // Increment retry count and update send time
+                    it->second.retries++;
+                    it->second.send_time = now;
+                    std::cout << "Retrying sequence number: " << it->first 
+                              << " to IP: " << it->second.ip 
+                              << " (retry " << it->second.retries << ")" << std::endl;
+                    ++it;
+                }
             } else {
                 ++it;
             }
@@ -232,7 +251,7 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests) {
             continue;
         }
 
-        requests.add(i, std::chrono::steady_clock::now());
+        requests.add(i, i, std::chrono::steady_clock::now());
     }
 }
 
