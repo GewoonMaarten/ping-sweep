@@ -199,35 +199,34 @@ class ThreadSafeMap {
 private:
     std::unordered_map<uint32_t, RequestInfo> map;
     std::mutex mtx;
-    const int max_retries = 3;
 
 public:
-    void add(uint32_t sequence_number, uint32_t ip, std::chrono::steady_clock::time_point send_time) {
+    void add(uint32_t ip, std::chrono::steady_clock::time_point send_time) {
         std::lock_guard<std::mutex> lock(mtx);
-        map[sequence_number] = {send_time, ip, 0};
+        map[ip] = {send_time, ip, 0};
     }
 
-    bool remove(uint32_t sequence_number) {
+    bool remove(uint32_t ip) {
         std::lock_guard<std::mutex> lock(mtx);
-        return map.erase(sequence_number) > 0;
+        return map.erase(ip) > 0;
     }
 
-    void check_timeouts(std::chrono::seconds timeout_duration) {
+    void check_timeouts(std::chrono::seconds timeout_duration, const int max_retries) {
         std::lock_guard<std::mutex> lock(mtx);
         auto now = std::chrono::steady_clock::now();
-        
+
         for (auto it = map.begin(); it != map.end(); ) {
             if (now - it->second.send_time > timeout_duration) {
                 if (it->second.retries >= max_retries) {
-                    std::cout << "Max retries reached for sequence number: " << it->first 
+                    std::cout << "Max retries reached for sequence number: " << it->first
                               << " to IP: " << it->second.ip << std::endl;
                     it = map.erase(it);
                 } else {
                     // Increment retry count and update send time
                     it->second.retries++;
                     it->second.send_time = now;
-                    std::cout << "Retrying sequence number: " << it->first 
-                              << " to IP: " << it->second.ip 
+                    std::cout << "Retrying sequence number: " << it->first
+                              << " to IP: " << it->second.ip
                               << " (retry " << it->second.retries << ")" << std::endl;
                     ++it;
                 }
@@ -251,7 +250,7 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests) {
             continue;
         }
 
-        requests.add(i, i, std::chrono::steady_clock::now());
+        requests.add(i, std::chrono::steady_clock::now());
     }
 }
 
@@ -278,9 +277,9 @@ void receiver_thread(int socket_fd, ThreadSafeMap &requests) {
 
         try {
             MessageHeader response_message_header = MessageHeader::from_native(response_msghdr);
-            uint16_t sequence_number = response_message_header.icmp_header.get_sequence_number();
-            if (requests.remove(sequence_number)) {
-                std::cout << "Received response for sequence number: " << sequence_number << std::endl;
+            uint32_t ip = response_message_header.sock_addr.get_sockaddr().sin_addr.s_addr;
+            if (requests.remove(ip)) {
+                std::cout << "Received response for sequence number: " << ip << std::endl;
             }
         } catch (const std::exception &e) {
             std::cerr << "Error processing response: " << e.what() << std::endl;
@@ -305,8 +304,8 @@ int main() {
 
      // Periodically check for timeouts
      while (true) {
-         requests.check_timeouts(5s); // Adjust timeout duration as needed
-         std::this_thread::sleep_for(1s);
+         requests.check_timeouts(5s, 3); // Adjust timeout duration as needed
+         std::this_thread::sleep_for(30s);
      }
 
      sender.join();
