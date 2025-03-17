@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <unordered_map>
+#include <condition_variable>
+
 
 using namespace std::chrono_literals;
 
@@ -179,54 +184,6 @@ public:
     }
 };
 
-// class PingRequest
-// {
-// private:
-//     uint8_t max_retries;
-
-//     MessageHeader request_header{};
-//     MessageHeader response_header{};
-
-//     std::chrono::steady_clock::time_point request_time_point;
-//     std::chrono::duration<double> response_duration;
-
-// public:
-//     PingRequest() : request_time_point{std::chrono::steady_clock::now()}
-//     {
-//     }
-
-//     void set_response_header(MessageHeader t_response_header)
-//     {
-//         const auto now{std::chrono::steady_clock::now()};
-//         std::chrono::duration<double> elapsed_seconds{request_time_point - now};
-//         response_duration = elapsed_seconds;
-
-//         response_header = t_response_header;
-//     }
-
-//     void increment_retry()
-//     {
-//         const auto new_sequence_number = request_header.get_sequence_number() + 1;
-//         if (new_sequence_number >= max_retries)
-//         {
-//             throw std::runtime_error("Cannot increment sequence number: max retries reached")
-//         }
-//         request_header.icmp_header.set_sequence_number(new_sequence_number);
-//     }
-
-//     bool is_timed_out(std::chrono::seconds time_out_duration)
-//     {
-//         const auto now{std::chrono::steady_clock::now()};
-//         std::chrono::duration<double> elapsed_seconds{request_time_point - now};
-//         return time_out_duration < elapsed_seconds;
-//     }
-
-//     bool reached_max_retries()
-//     {
-//         return max_retries < request_header->get_sequence_number();
-//     }
-// };
-
 int main()
 {
     std::cout << "Starting program..." << std::endl;
@@ -279,7 +236,7 @@ int main()
 
     const auto stop = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed_seconds{stop - start};
-    std::cout << elapsed_seconds << std::endl;
+    // std::cout << elapsed_seconds << std::endl;
 
     // // Close the socket
     // close(socket_fd);
