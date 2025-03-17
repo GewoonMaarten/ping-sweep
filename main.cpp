@@ -180,7 +180,8 @@ public:
             throw std::invalid_argument("Invalid or missing iovec in msghdr");
         }
 
-        const uint8_t *icmp_data = static_cast<const uint8_t *>(hdr.msg_iov[0].iov_base + 20);
+        const uint8_t *base_ptr = static_cast<const uint8_t *>(hdr.msg_iov[0].iov_base);
+        const uint8_t *icmp_data = base_ptr + 20;
         size_t icmp_size = hdr.msg_iov[0].iov_len - 20;
         IcmpHeader icmp_header(icmp_data, icmp_size);
 
@@ -237,7 +238,7 @@ public:
     }
 };
 
-void sender_thread(int socket_fd, ThreadSafeMap &requests) {
+void sender_thread(int socket_fd, ThreadSafeMap &requests, const SockAddr &dest) {
     for (uint32_t i = 0; i <= UINT32_MAX; i++) {
         IcmpHeader icmp_request_data{0x1234, 0};
         SockAddr sock_addr{i, 0};
@@ -299,7 +300,7 @@ int main() {
      ThreadSafeMap requests;
      SockAddr dest{"8.8.8.8", 0};
 
-     std::thread sender(sender_thread, socket_fd, std::ref(requests), std::ref(dest));
+     std::thread sender(sender_thread, socket_fd, std::ref(requests), dest);
      std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
 
      // Periodically check for timeouts
