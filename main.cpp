@@ -211,7 +211,12 @@ public:
 
     bool remove(uint32_t ip) {
         std::lock_guard<std::mutex> lock(mtx);
-        return map.erase(ip) > 0;
+        auto it = map.find(ip);
+        if (it != map.end()) {
+            map.erase(it);
+            return true;
+        }
+        return false;
     }
 
     void check_timeouts(std::chrono::seconds timeout_duration, const int max_retries) {
@@ -259,7 +264,8 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests) {
             continue;
         }
 
-        requests.add(i, std::chrono::steady_clock::now());
+        uint32_t ip = sock_addr.get_sockaddr().sin_addr.s_addr;
+        requests.add(ip, std::chrono::steady_clock::now());
     }
 }
 
@@ -288,7 +294,9 @@ void receiver_thread(int socket_fd, ThreadSafeMap &requests) {
             MessageHeader response_message_header = MessageHeader::from_native(response_msghdr);
             uint32_t ip = response_message_header.sock_addr.get_sockaddr().sin_addr.s_addr;
             if (requests.remove(ip)) {
-                std::cout << "Received response for IP: " << ip << std::endl;
+                std::cout << "Received and removed response for IP: " << ip << std::endl;
+            } else {
+                std::cout << "No matching request found for IP: " << ip << std::endl;
             }
 
         } catch (const std::exception &e) {
