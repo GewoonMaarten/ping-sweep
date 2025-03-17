@@ -238,7 +238,7 @@ public:
     }
 };
 
-void sender_thread(int socket_fd, ThreadSafeMap &requests, const SockAddr &dest) {
+void sender_thread(int socket_fd, ThreadSafeMap &requests) {
     for (uint32_t i = 0; i <= UINT32_MAX; i++) {
         IcmpHeader icmp_request_data{0x1234, 0};
         SockAddr sock_addr{i, 0};
@@ -298,9 +298,7 @@ int main() {
      }
 
      ThreadSafeMap requests;
-     SockAddr dest{"8.8.8.8", 0};
-
-     std::thread sender(sender_thread, socket_fd, std::ref(requests), dest);
+     std::thread sender(sender_thread, socket_fd, std::ref(requests));
      std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
 
      // Periodically check for timeouts
