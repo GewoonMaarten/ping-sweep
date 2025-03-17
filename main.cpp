@@ -211,12 +211,7 @@ public:
 
     bool remove(uint32_t ip) {
         std::lock_guard<std::mutex> lock(mtx);
-        auto it = map.find(ip);
-        if (it != map.end()) {
-            map.erase(it);
-            return true;
-        }
-        return false;
+        return map.erase(ip) > 0;
     }
 
     void check_timeouts(std::chrono::seconds timeout_duration, const int max_retries) {
@@ -248,9 +243,9 @@ public:
 };
 
 void sender_thread(int socket_fd, ThreadSafeMap &requests) {
-    for (uint32_t i = 0; i <= 0; i++) {
+    for (uint32_t i = 0; i <= UINT32_MAX; i++) {
         IcmpHeader icmp_request_data{0x1234, 0};
-        SockAddr sock_addr{"8.8.8.8", 0};
+        SockAddr sock_addr{i, 0};
         MessageHeader request_message_header{sock_addr, icmp_request_data};
         msghdr request_msghdr = request_message_header.to_native();
 
@@ -261,11 +256,8 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests) {
                 std::this_thread::sleep_for(100ms);
                 continue;
             }
-            continue;
         }
-
-        uint32_t ip = sock_addr.get_sockaddr().sin_addr.s_addr;
-        requests.add(ip, std::chrono::steady_clock::now());
+        requests.add(i, std::chrono::steady_clock::now());
     }
 }
 
