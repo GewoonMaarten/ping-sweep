@@ -15,117 +15,6 @@
 
 using namespace std::chrono_literals;
 
-class ThreadSafeMap {
-private:
-    std::unordered_map<uint16_t, std::chrono::steady_clock::time_point> map;
-    std::mutex mtx;
-
-public:
-    void add(uint16_t sequence_number, std::chrono::steady_clock::time_point send_time) {
-        std::lock_guard<std::mutex> lock(mtx);
-        map[sequence_number] = send_time;
-    }
-
-    bool remove(uint16_t sequence_number) {
-        std::lock_guard<std::mutex> lock(mtx);
-        return map.erase(sequence_number) > 0;
-    }
-
-    void check_timeouts(std::chrono::seconds timeout_duration) {
-        std::lock_guard<std::mutex> lock(mtx);
-        auto now = std::chrono::steady_clock::now();
-        for (auto it = map.begin(); it != map.end(); ) {
-            if (now - it->second > timeout_duration) {
-                std::cout << "Timeout for sequence number: " << it->first << std::endl;
-                it = map.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-};
-
-void sender_thread(int socket_fd, ThreadSafeMap &requests, const SockAddr &dest) {
-     uint16_t sequence_number = 0;
-     while (true) {
-         IcmpHeader icmp_request_data{0x1234, sequence_number};
-         MessageHeader request_message_header{dest, icmp_request_data};
-         msghdr request_msghdr = request_message_header.to_native();
-
-         ssize_t sent_bytes = sendmsg(socket_fd, &request_msghdr, 0);
-         if (sent_bytes < 0) {
-             perror("sendmsg");
-             continue;
-         }
-
-         requests.add(sequence_number, std::chrono::steady_clock::now());
-         sequence_number++;
-
-         std::this_thread::sleep_for(1s); // Adjust the delay as needed
-     }
-}
-
-void receiver_thread(int socket_fd, ThreadSafeMap &requests) {
-    while (true) {
-        struct msghdr response_msghdr;
-        struct iovec iov[1];
-        struct sockaddr_in sin;
-        response_msghdr.msg_name = &sin;
-        response_msghdr.msg_namelen = sizeof(sin);
-        response_msghdr.msg_iov = iov;
-        response_msghdr.msg_iovlen = 1;
-
-        char databuf[28];
-        iov[0].iov_base = databuf;
-        iov[0].iov_len = sizeof(databuf);
-        memset(databuf, 0, sizeof(databuf));
-
-        ssize_t received_bytes = recvmsg(socket_fd, &response_msghdr, 0);
-        if (received_bytes < 0) {
-            perror("recvmsg");
-            continue;
-        }
-
-        try {
-            MessageHeader response_message_header = MessageHeader::from_native(response_msghdr);
-            uint16_t sequence_number = response_message_header.icmp_header.get_sequence_number();
-            if (requests.remove(sequence_number)) {
-                std::cout << "Received response for sequence number: " << sequence_number << std::endl;
-            }
-        } catch (const std::exception &e) {
-            std::cerr << "Error processing response: " << e.what() << std::endl;
-        }
-    }
-}
-
-int main() {
-     std::cout << "Starting program..." << std::endl;
-
-     int socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-     if (socket_fd == -1) {
-         perror("socket");
-         return 1;
-     }
-
-     ThreadSafeMap requests;
-     SockAddr dest{"8.8.8.8", 0};
-
-     std::thread sender(sender_thread, socket_fd, std::ref(requests), std::ref(dest));
-     std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
-
-     // Periodically check for timeouts
-     while (true) {
-         requests.check_timeouts(5s); // Adjust timeout duration as needed
-         std::this_thread::sleep_for(1s);
-     }
-
-     sender.join();
-     receiver.join();
-
-     // close(socket_fd);
-     std::cout << "Finished" << std::endl;
-     return 0;
- }
 
 class IcmpHeader
 {
@@ -210,36 +99,6 @@ public:
     size_t size() const
     {
         return sizeof(IcmpHeader);
-    }
-};
-
-class ThreadSafeMap {
-private:
-    std::unordered_map<uint16_t, std::chrono::steady_clock::time_point> map;
-    std::mutex mtx;
-
-public:
-    void add(uint16_t sequence_number, std::chrono::steady_clock::time_point send_time) {
-        std::lock_guard<std::mutex> lock(mtx);
-        map[sequence_number] = send_time;
-    }
-
-    bool remove(uint16_t sequence_number) {
-        std::lock_guard<std::mutex> lock(mtx);
-        return map.erase(sequence_number) > 0;
-    }
-
-    void check_timeouts(std::chrono::seconds timeout_duration) {
-        std::lock_guard<std::mutex> lock(mtx);
-        auto now = std::chrono::steady_clock::now();
-        for (auto it = map.begin(); it != map.end(); ) {
-            if (now - it->second > timeout_duration) {
-                std::cout << "Timeout for sequence number: " << it->first << std::endl;
-                it = map.erase(it);
-            } else {
-                ++it;
-            }
-        }
     }
 };
 
@@ -330,11 +189,41 @@ public:
     }
 };
 
-void sender_thread(int socket_fd, ThreadSafeMap &requests, const SockAddr &dest) {
-    uint16_t sequence_number = 0;
-    while (true) {
-        IcmpHeader icmp_request_data{0x1234, sequence_number};
-        MessageHeader request_message_header{dest, icmp_request_data};
+class ThreadSafeMap {
+private:
+    std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> map;
+    std::mutex mtx;
+
+public:
+    void add(uint32_t sequence_number, std::chrono::steady_clock::time_point send_time) {
+        std::lock_guard<std::mutex> lock(mtx);
+        map[sequence_number] = send_time;
+    }
+
+    bool remove(uint32_t sequence_number) {
+        std::lock_guard<std::mutex> lock(mtx);
+        return map.erase(sequence_number) > 0;
+    }
+
+    void check_timeouts(std::chrono::seconds timeout_duration) {
+        std::lock_guard<std::mutex> lock(mtx);
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = map.begin(); it != map.end(); ) {
+            if (now - it->second > timeout_duration) {
+                std::cout << "Timeout for sequence number: " << it->first << std::endl;
+                it = map.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+};
+
+void sender_thread(int socket_fd, ThreadSafeMap &requests) {
+    for (uint32_t i = 0; i <= UINT32_MAX; i++) {
+        IcmpHeader icmp_request_data{0x1234, 0};
+        SockAddr sock_addr{i, 0};
+        MessageHeader request_message_header{sock_addr, icmp_request_data};
         msghdr request_msghdr = request_message_header.to_native();
 
         ssize_t sent_bytes = sendmsg(socket_fd, &request_msghdr, 0);
@@ -343,10 +232,7 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests, const SockAddr &dest)
             continue;
         }
 
-        requests.add(sequence_number, std::chrono::steady_clock::now());
-        sequence_number++;
-
-        std::this_thread::sleep_for(1s);
+        requests.add(i, std::chrono::steady_clock::now());
     }
 }
 
@@ -383,32 +269,31 @@ void receiver_thread(int socket_fd, ThreadSafeMap &requests) {
     }
 }
 
-int main()
-{
-    std::cout << "Starting program..." << std::endl;
+int main() {
+     std::cout << "Starting program..." << std::endl;
 
-    int socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    if (socket_fd == -1) {
-        perror("socket");
-        return 1;
-    }
+     int socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+     if (socket_fd == -1) {
+         perror("socket");
+         return 1;
+     }
 
-    ThreadSafeMap requests;
-    SockAddr dest{"8.8.8.8", 0};
+     ThreadSafeMap requests;
+     SockAddr dest{"8.8.8.8", 0};
 
-    std::thread sender(sender_thread, socket_fd, std::ref(requests), std::ref(dest));
-    std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
+     std::thread sender(sender_thread, socket_fd, std::ref(requests), std::ref(dest));
+     std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
 
-    // Periodically check for timeouts
-    while (true) {
-        requests.check_timeouts(5s);
-        std::this_thread::sleep_for(1s);
-    }
+     // Periodically check for timeouts
+     while (true) {
+         requests.check_timeouts(5s); // Adjust timeout duration as needed
+         std::this_thread::sleep_for(1s);
+     }
 
-    sender.join();
-    receiver.join();
+     sender.join();
+     receiver.join();
 
-    close(socket_fd);
-    std::cout << "Finished" << std::endl;
-    return 0;
-}
+     // close(socket_fd);
+     std::cout << "Finished" << std::endl;
+     return 0;
+ }
