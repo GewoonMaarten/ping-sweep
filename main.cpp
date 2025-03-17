@@ -45,6 +45,88 @@ public:
     }
 };
 
+void sender_thread(int socket_fd, ThreadSafeMap &requests, const SockAddr &dest) {
+     uint16_t sequence_number = 0;
+     while (true) {
+         IcmpHeader icmp_request_data{0x1234, sequence_number};
+         MessageHeader request_message_header{dest, icmp_request_data};
+         msghdr request_msghdr = request_message_header.to_native();
+
+         ssize_t sent_bytes = sendmsg(socket_fd, &request_msghdr, 0);
+         if (sent_bytes < 0) {
+             perror("sendmsg");
+             continue;
+         }
+
+         requests.add(sequence_number, std::chrono::steady_clock::now());
+         sequence_number++;
+
+         std::this_thread::sleep_for(1s); // Adjust the delay as needed
+     }
+}
+
+void receiver_thread(int socket_fd, ThreadSafeMap &requests) {
+    while (true) {
+        struct msghdr response_msghdr;
+        struct iovec iov[1];
+        struct sockaddr_in sin;
+        response_msghdr.msg_name = &sin;
+        response_msghdr.msg_namelen = sizeof(sin);
+        response_msghdr.msg_iov = iov;
+        response_msghdr.msg_iovlen = 1;
+
+        char databuf[28];
+        iov[0].iov_base = databuf;
+        iov[0].iov_len = sizeof(databuf);
+        memset(databuf, 0, sizeof(databuf));
+
+        ssize_t received_bytes = recvmsg(socket_fd, &response_msghdr, 0);
+        if (received_bytes < 0) {
+            perror("recvmsg");
+            continue;
+        }
+
+        try {
+            MessageHeader response_message_header = MessageHeader::from_native(response_msghdr);
+            uint16_t sequence_number = response_message_header.icmp_header.get_sequence_number();
+            if (requests.remove(sequence_number)) {
+                std::cout << "Received response for sequence number: " << sequence_number << std::endl;
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "Error processing response: " << e.what() << std::endl;
+        }
+    }
+}
+
+int main() {
+     std::cout << "Starting program..." << std::endl;
+
+     int socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+     if (socket_fd == -1) {
+         perror("socket");
+         return 1;
+     }
+
+     ThreadSafeMap requests;
+     SockAddr dest{"8.8.8.8", 0};
+
+     std::thread sender(sender_thread, socket_fd, std::ref(requests), std::ref(dest));
+     std::thread receiver(receiver_thread, socket_fd, std::ref(requests));
+
+     // Periodically check for timeouts
+     while (true) {
+         requests.check_timeouts(5s); // Adjust timeout duration as needed
+         std::this_thread::sleep_for(1s);
+     }
+
+     sender.join();
+     receiver.join();
+
+     // close(socket_fd);
+     std::cout << "Finished" << std::endl;
+     return 0;
+ }
+
 class IcmpHeader
 {
 private:
