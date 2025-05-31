@@ -1,11 +1,11 @@
 #include <arpa/inet.h>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <limits.h>
 #include <mutex>
 #include <ostream>
 #include <sys/socket.h>
@@ -218,8 +218,8 @@ public:
 };
 
 void sender_thread(int socket_fd, ThreadSafeMap &requests) {
-  const size_t BATCH_SIZE = 1024;
-  const std::chrono::milliseconds BATCH_DELAY(10); // Delay between batches
+  const size_t BATCH_SIZE = IOV_MAX;
+  const std::chrono::milliseconds BATCH_DELAY(10);
   const int MAX_RETRIES = 3;
 
   uint32_t current_ip = 134744072;
@@ -263,6 +263,7 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests) {
                        std::chrono::steady_clock::now());
         }
       }
+      break;
 
       if (sent < messages_in_batch) {
         messages_in_batch -= sent;
@@ -275,7 +276,7 @@ void sender_thread(int socket_fd, ThreadSafeMap &requests) {
     }
 
     // Add delay between batches
-    std::this_thread::sleep_for(BATCH_DELAY);
+    // std::this_thread::sleep_for(BATCH_DELAY);
 
     if (current_ip >= UINT32_MAX)
       break;
