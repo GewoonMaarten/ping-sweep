@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 const IcmpHeader = struct {
     type: u8 = 8,
@@ -57,3 +58,48 @@ const IcmpHeader = struct {
         return std.mem.asBytes(self);
     }
 };
+
+test "IcmpHeader initialization" {
+    const header = IcmpHeader.init(0x1234, 0x5678);
+    try testing.expectEqual(@as(u8, 8), header.type);
+    try testing.expectEqual(@as(u8, 0), header.code);
+    try testing.expectEqual(@as(u16, 0x1234), std.mem.bigToNative(u16, header.identifier));
+    try testing.expectEqual(@as(u16, 0x5678), std.mem.bigToNative(u16, header.sequence_number));
+    try testing.expect(header.isCorrectChecksum());
+}
+
+test "IcmpHeader checksum calculation" {
+    var header = IcmpHeader{
+        .type = 8,
+        .code = 0,
+        .identifier = std.mem.nativeToBig(u16, 0x1234),
+        .sequence_number = std.mem.nativeToBig(u16, 0x5678),
+    };
+    header.checksum = header.calcChecksum();
+    try testing.expect(header.isCorrectChecksum());
+}
+
+test "IcmpHeader fromBytes roundtrip" {
+    const original = IcmpHeader.init(0x1234, 0x5678);
+    const bytes = original.data();
+    
+    const parsed = try IcmpHeader.fromBytes(bytes);
+    try testing.expectEqual(original.type, parsed.type);
+    try testing.expectEqual(original.code, parsed.code);
+    try testing.expectEqual(original.checksum, parsed.checksum);
+    try testing.expectEqual(original.identifier, parsed.identifier);
+    try testing.expectEqual(original.sequence_number, parsed.sequence_number);
+}
+
+test "IcmpHeader fromBytes with invalid buffer" {
+    const small_buffer = [_]u8{1, 2, 3}; // Too small
+    try testing.expectError(error.BufferTooSmall, IcmpHeader.fromBytes(&small_buffer));
+}
+
+test "IcmpHeader data method" {
+    const header = IcmpHeader.init(0x1234, 0x5678);
+    const bytes = header.data();
+    try testing.expectEqual(@sizeOf(IcmpHeader), bytes.len);
+    try testing.expectEqual(header.type, bytes[0]);
+    try testing.expectEqual(header.code, bytes[1]);
+}
