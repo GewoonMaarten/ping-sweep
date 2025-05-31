@@ -11,18 +11,18 @@ const IcmpHeader = struct {
     fn calcChecksum(self: *IcmpHeader) u16 {
         var sum: u32 = 0;
         sum += @as(u32, self.type) << 8 | self.code;
-        sum += std.mem.nativeToBig(u16, self.identifier);
-        sum += std.mem.nativeToBig(u16, self.sequence_number);
-        return std.mem.nativeToBig(u16, @truncate(~sum));
+        sum += std.mem.readInt(u16, std.mem.asBytes(&self.identifier), .Big);
+        sum += std.mem.readInt(u16, std.mem.asBytes(&self.sequence_number), .Big);
+        return @truncate(~sum);
     }
 
     fn isCorrectChecksum(self: *const IcmpHeader) bool {
         var sum: u32 = 0;
         sum += @as(u32, self.type) << 8 | self.code;
-        sum += std.mem.nativeToBig(u16, self.identifier);
-        sum += std.mem.nativeToBig(u16, self.sequence_number);
-        sum += std.mem.nativeToBig(u16, self.checksum);
-        return sum == 0xFFFF;
+        sum += std.mem.readInt(u16, std.mem.asBytes(&self.identifier), .Big);
+        sum += std.mem.readInt(u16, std.mem.asBytes(&self.sequence_number), .Big);
+        sum += std.mem.readInt(u16, std.mem.asBytes(&self.checksum), .Big);
+        return (sum & 0xFFFF) == 0xFFFF;
     }
 
     pub fn init(identifier: u16, sequence_number: u16) IcmpHeader {
@@ -42,9 +42,9 @@ const IcmpHeader = struct {
         const header = IcmpHeader{
             .type = bytes[0],
             .code = bytes[1],
-            .checksum = std.mem.readIntBig(u16, bytes[2..4]),
-            .identifier = std.mem.readIntBig(u16, bytes[4..6]),
-            .sequence_number = std.mem.readIntBig(u16, bytes[6..8]),
+            .checksum = std.mem.readInt(u16, bytes[2..4], .Big),
+            .identifier = std.mem.readInt(u16, bytes[4..6], .Big),
+            .sequence_number = std.mem.readInt(u16, bytes[6..8], .Big),
         };
 
         // if (!header.isCorrectChecksum()) {
@@ -63,8 +63,8 @@ test "IcmpHeader initialization" {
     const header = IcmpHeader.init(0x1234, 0x5678);
     try testing.expectEqual(@as(u8, 8), header.type);
     try testing.expectEqual(@as(u8, 0), header.code);
-    try testing.expectEqual(@as(u16, 0x1234), std.mem.bigToNative(u16, header.identifier));
-    try testing.expectEqual(@as(u16, 0x5678), std.mem.bigToNative(u16, header.sequence_number));
+    try testing.expectEqual(@as(u16, 0x1234), std.mem.readInt(u16, std.mem.asBytes(&header.identifier), .Little));
+    try testing.expectEqual(@as(u16, 0x5678), std.mem.readInt(u16, std.mem.asBytes(&header.sequence_number), .Little));
     try testing.expect(header.isCorrectChecksum());
 }
 
