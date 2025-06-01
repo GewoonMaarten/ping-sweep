@@ -19,10 +19,10 @@ pub fn senderThread(
 
     var total_bytes: usize = 0;
     var total_packets: usize = 0;
-    const packet_size = @sizeOf(@TypeOf(icmpHeader)); // Or actual packet size if different
+    const packet_size = @sizeOf(@TypeOf(icmpHeader));
     var timer = try std.time.Timer.start();
     var last_log_time: u64 = 0;
-    const log_interval_ns = std.time.ns_per_s; // Log every second
+    const log_interval_ns = std.time.ns_per_s;
 
     for (0..totalIps) |index| {
         const newIndex = feistelPermutation.shuffle(index);
@@ -33,7 +33,6 @@ pub fn senderThread(
 
         try icmpSocket.sendTo(icmpHeader, pickedIp);
 
-        // Update counters
         total_packets += 1;
         total_bytes += packet_size;
 
@@ -43,7 +42,6 @@ pub fn senderThread(
             const elapsed_seconds = @as(f64, @floatFromInt(now)) / std.time.ns_per_s;
             const pps = @as(f64, @floatFromInt(total_packets)) / elapsed_seconds;
 
-            // Calculate estimated time remaining
             const remaining_packets = totalIps - total_packets;
             const estimated_seconds_remaining = @as(f64, @floatFromInt(remaining_packets)) / pps;
             // const estimated_completion_time = std.time.epoch.getEpochSecond() + @as(i64, @intFromFloat(estimated_seconds_remaining));
@@ -68,7 +66,6 @@ pub fn senderThread(
         }
     }
 
-    // Final statistics
     const elapsed_ns = timer.read();
     const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / std.time.ns_per_s;
     const pps = @as(f64, @floatFromInt(total_packets)) / elapsed_seconds;
