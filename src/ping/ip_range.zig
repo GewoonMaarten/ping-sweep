@@ -14,11 +14,11 @@ pub const IpRange = struct {
             }
         }
 
-        const ipAddress = try std.net.Ip4Address.parse(buffer[0..offset], 0);
+        const ipAddress = try ip.Ip.fromBuffer(buffer[0..offset]);
         const suffix = try std.fmt.parseInt(u6, buffer[offset + 1 .. buffer.len], 10);
 
         const mask = @as(u64, 0xFFFFFFFF00000000) >> suffix;
-        const begin = @as(u32, @intCast(std.mem.nativeToBig(u32, ipAddress.sa.addr) & mask));
+        const begin = @as(u32, @intCast(ipAddress.value & mask));
         const end = @as(u32, @intCast(begin | (~mask & 0xFFFFFFFF)));
 
         // std.debug.print("ip: {d}\n", .{ipAddress.sa.addr});

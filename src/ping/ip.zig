@@ -2,14 +2,24 @@ const std = @import("std");
 
 pub const Ip = struct {
     value: u32,
+    address: std.net.Address,
 
     pub fn init(address: u32) Ip {
-        return Ip{ .value = address };
+        var ipBuffer: [4]u8 = undefined;
+        std.mem.writeInt(u32, &ipBuffer, address, .big);
+        const ipAddress = std.net.Address.initIp4(ipBuffer, 0);
+        return Ip{
+            .value = std.mem.nativeToBig(u32, ipAddress.in.sa.addr),
+            .address = ipAddress,
+        };
     }
 
     pub fn fromBuffer(buffer: []const u8) !Ip {
-        const ipAddress = try std.net.Ip4Address.parse(buffer, 0);
-        return Ip{ .value = std.mem.nativeToBig(u32, ipAddress.sa.addr) };
+        const ipAddress = try std.net.Address.parseIp4(buffer, 0);
+        return Ip{
+            .value = std.mem.nativeToBig(u32, ipAddress.in.sa.addr),
+            .address = ipAddress,
+        };
     }
 
     pub fn toString(self: *const Ip, allocator: std.mem.Allocator) ![]u8 {
