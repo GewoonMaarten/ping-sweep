@@ -75,10 +75,22 @@ pub const IpRangeList = struct {
         self.sort();
     }
 
+    pub fn getIpByIndex(self: *const IpRangeList, i: usize) Ip {
+        var offset: u32 = 0;
+        for (self.ipRanges.items) |r| {
+            const size = r.end.value - r.begin.value + 1;
+            if (i < offset + size) {
+                return Ip.init(r.begin.value + (@as(u32, @intCast(i)) - offset));
+            }
+            offset += size;
+        }
+        unreachable;
+    }
+
     pub fn getIpCount(self: *const IpRangeList) usize {
         var total: usize = 0;
         for (self.ipRanges.items) |r| {
-            total += r.end.value - r.begin.value;
+            total += r.end.value - r.begin.value + 1;
         }
         return total;
     }
