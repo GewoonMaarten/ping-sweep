@@ -18,7 +18,7 @@ pub fn main() !void {
     );
     defer allocator.free(white_list_buffer);
 
-    std.log.info("include list:", .{});
+    std.log.err("include list:", .{});
 
     var offset: usize = 0;
     for (white_list_buffer, 0..) |ch, i| {
@@ -26,7 +26,7 @@ pub fn main() !void {
             const ipRange = try ping.IpRange.fromCidr(white_list_buffer[offset..i]);
             try ip_range_list.includeRange(ipRange);
 
-            std.log.info("\tbegin ip: {s}, end ip: {s}", .{ ipRange.begin, ipRange.end });
+            std.log.err("\tbegin ip: {s}, end ip: {s}", .{ ipRange.begin, ipRange.end });
 
             offset = i + 1;
         }
@@ -39,7 +39,7 @@ pub fn main() !void {
     );
     defer allocator.free(black_list_buffer);
 
-    std.log.info("exclude list:", .{});
+    std.log.err("exclude list:", .{});
 
     offset = 0;
     for (black_list_buffer, 0..) |ch, i| {
@@ -47,18 +47,23 @@ pub fn main() !void {
             const ipRange = try ping.IpRange.fromCidr(black_list_buffer[offset..i]);
             try ip_range_list.excludeRange(ipRange);
 
-            std.log.info("\tbegin ip: {s}, end ip: {s}", .{ ipRange.begin, ipRange.end });
+            std.log.err("\tbegin ip: {s}, end ip: {s}", .{ ipRange.begin, ipRange.end });
 
             offset = i + 1;
         }
     }
 
-    std.log.info("range list includes: {d} IPs", .{ip_range_list.getIpCount()});
+    std.log.err("range list includes: {d} IPs", .{ip_range_list.getIpCount()});
 
     var processor = ping.BatchProcessor.init(ip_range_list);
-    var ring = try ping.IoRing.init(IORING_BATCH_SIZE);
-    defer ring.deinit();
+    var transmit_ring = try ping.IoRing.init(IORING_BATCH_SIZE);
+    defer transmit_ring.deinit();
+    const transmit_thread = try std.Thread.spawn(.{}, ping.IoRing.transmitLoop, .{ &transmit_ring, &processor, allocator });
 
-    // Start the transmit loop
-    try ring.transmitLoop(&processor, allocator);
+    // var receive_ring = try ping.IoRing.init(IORING_BATCH_SIZE);
+    // defer receive_ring.deinit();
+    // const receive_thread = try std.Thread.spawn(.{}, ping.IoRing.receiveLoop, .{ &receive_ring, allocator });
+
+    transmit_thread.join();
+    // receive_thread.join();
 }
