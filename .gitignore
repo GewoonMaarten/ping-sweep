@@ -1,2 +1,6 @@
 .env
 .aider*
+
+#zig
+.zig-cache
+zig-out
