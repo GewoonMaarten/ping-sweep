@@ -237,7 +237,20 @@ pub const IoRing = struct {
         _ = try self.ring.submit();
 
         while (true) {
-            const n = try self.ring.copy_cqes(&cqes, 1);
+            const n = self.ring.copy_cqes(&cqes, 0) catch |err| switch (err) {
+                error.CompletionQueueEmpty => {
+                    // No completions available, wait a bit and try again
+                    std.time.sleep(1_000_000); // 1ms
+                    continue;
+                },
+                else => return err,
+            };
+            
+            if (n == 0) {
+                std.time.sleep(1_000_000); // 1ms
+                continue;
+            }
+            
             for (cqes[0..n]) |*cqe| {
                 if (cqe.res < 0) {
                     std.posix.abort();
