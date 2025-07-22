@@ -88,6 +88,8 @@ pub const IoRing = struct {
     last_log_time: i64 = 0,
     log_interval_ms: i64 = 1_000, // 1 second
 
+    cqes: [256]std.os.linux.io_uring_cqe = undefined,
+
     pub fn init(batch_size: u16) !IoRing {
         const socket = try std.posix.socket(
             std.posix.AF.INET,
@@ -95,8 +97,25 @@ pub const IoRing = struct {
             std.posix.IPPROTO.ICMP,
         );
         errdefer std.posix.close(socket);
+        const send_buf_size: c_int = 10 * 1024 * 1024;
+        const recv_buf_size: c_int = 10 * 1024 * 1024;
+        try std.posix.setsockopt(
+            socket,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.SNDBUF,
+            &std.mem.toBytes(send_buf_size),
+        );
+        try std.posix.setsockopt(
+            socket,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.RCVBUF,
+            &std.mem.toBytes(recv_buf_size),
+        );
 
-        var ring = try std.os.linux.IoUring.init(batch_size, std.os.linux.IORING_FEAT_SQPOLL_NONFIXED);
+        var ring = try std.os.linux.IoUring.init(
+            batch_size,
+            std.os.linux.IORING_SETUP_SQPOLL | std.os.linux.IORING_FEAT_SQPOLL_NONFIXED | std.os.linux.IORING_SETUP_SUBMIT_ALL,
+        );
         errdefer ring.deinit();
 
         // Create CSV file for logging source IPs
@@ -140,9 +159,8 @@ pub const IoRing = struct {
                 self.packets_sent += 1;
                 self.bytes_sent += @sizeOf(std.posix.sockaddr.in) + @sizeOf(IcmpHeader);
             }
-
-            const submitted = try self.ring.submit();
-            try self.waitForCompletions(submitted);
+            _ = try self.ring.submit();
+            try self.waitForCompletions();
 
             try self.logMetrics();
         }
@@ -150,44 +168,40 @@ pub const IoRing = struct {
         try self.logFinalMetrics();
     }
 
-    fn waitForCompletions(self: *IoRing, expected: u32) !void {
-        var completed: u32 = 0;
-        while (completed < expected) {
-            const cq_ready = self.ring.cq_ready();
-            for (0..cq_ready) |i| {
-                const cqe = self.ring.cq.cqes[i];
-                completed += 1;
-                // code stole from std.posix.sendmsg
-                switch (std.posix.errno(@as(isize, @intCast(cqe.res)))) {
-                    .SUCCESS => return,
+    fn waitForCompletions(self: *IoRing) !void {
+        const ready = self.ring.sq_ready();
+        const completed = try self.ring.copy_cqes(&self.cqes, ready);
+        for (self.cqes[0..completed]) |cqe| {
+            // code stole from std.posix.sendmsg
+            switch (std.posix.errno(@as(isize, @intCast(cqe.res)))) {
+                .SUCCESS => return,
 
-                    .ACCES => return error.AccessDenied,
-                    .AGAIN => return error.WouldBlock,
-                    .ALREADY => return error.FastOpenAlreadyInProgress,
-                    .BADF => unreachable, // always a race condition
-                    .CONNRESET => return error.ConnectionResetByPeer,
-                    .DESTADDRREQ => unreachable, // The socket is not connection-mode, and no peer address is set.
-                    .FAULT => unreachable, // An invalid user space address was specified for an argument.
-                    .INTR => continue,
-                    .INVAL => unreachable, // Invalid argument passed.
-                    .ISCONN => unreachable, // connection-mode socket was connected already but a recipient was specified
-                    .MSGSIZE => return error.MessageTooBig,
-                    .NOBUFS => return error.SystemResources,
-                    .NOMEM => return error.SystemResources,
-                    .NOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
-                    .OPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
-                    .PIPE => return error.BrokenPipe,
-                    .AFNOSUPPORT => return error.AddressFamilyNotSupported,
-                    .LOOP => return error.SymLinkLoop,
-                    .NAMETOOLONG => return error.NameTooLong,
-                    .NOENT => return error.FileNotFound,
-                    .NOTDIR => return error.NotDir,
-                    .HOSTUNREACH => return error.NetworkUnreachable,
-                    .NETUNREACH => return error.NetworkUnreachable,
-                    .NOTCONN => return error.SocketNotConnected,
-                    .NETDOWN => return error.NetworkSubsystemFailed,
-                    else => |err| return std.posix.unexpectedErrno(err),
-                }
+                .ACCES => return error.AccessDenied,
+                .AGAIN => return error.WouldBlock,
+                .ALREADY => return error.FastOpenAlreadyInProgress,
+                .BADF => unreachable, // always a race condition
+                .CONNRESET => return error.ConnectionResetByPeer,
+                .DESTADDRREQ => unreachable, // The socket is not connection-mode, and no peer address is set.
+                .FAULT => unreachable, // An invalid user space address was specified for an argument.
+                .INTR => continue,
+                .INVAL => unreachable, // Invalid argument passed.
+                .ISCONN => unreachable, // connection-mode socket was connected already but a recipient was specified
+                .MSGSIZE => return error.MessageTooBig,
+                .NOBUFS => return error.SystemResources,
+                .NOMEM => return error.SystemResources,
+                .NOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
+                .OPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
+                .PIPE => return error.BrokenPipe,
+                .AFNOSUPPORT => return error.AddressFamilyNotSupported,
+                .LOOP => return error.SymLinkLoop,
+                .NAMETOOLONG => return error.NameTooLong,
+                .NOENT => return error.FileNotFound,
+                .NOTDIR => return error.NotDir,
+                .HOSTUNREACH => return error.NetworkUnreachable,
+                .NETUNREACH => return error.NetworkUnreachable,
+                .NOTCONN => return error.SocketNotConnected,
+                .NETDOWN => return error.NetworkSubsystemFailed,
+                else => |err| return std.posix.unexpectedErrno(err),
             }
         }
     }
