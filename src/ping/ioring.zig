@@ -2,6 +2,7 @@ const std = @import("std");
 const crypto = @import("crypto.zig");
 const IpRangeList = @import("ip_range_list.zig").IpRangeList;
 const icmp_header = @import("icmp.zig");
+const IpHeader = @import("./ip.zig").IpHeader;
 
 const IcmpHeader = icmp_header.IcmpHeader;
 const FeistelPermutation = crypto.FeistelPermutation;
@@ -51,7 +52,7 @@ pub const BatchProcessor = struct {
             const picked_ip = self.ip_range_list.getIpByIndex(new_idx);
 
             batch_buffer[i].address = picked_ip.inner.any;
-            batch_buffer[i].header = IcmpHeader.init(0, 0);
+            batch_buffer[i].header = IcmpHeader.init(10, 0);
             batch_buffer[i].iovec = std.posix.iovec_const{
                 .base = @ptrCast(&batch_buffer[i].header),
                 .len = @sizeOf(IcmpHeader),
@@ -219,91 +220,77 @@ pub const IoRing = struct {
     }
 
     pub fn receiveLoop(self: *IoRing, allocator: std.mem.Allocator) !void {
-        _ = self;
+        // _ = self;
         _ = allocator;
-        // const receive_buffer = try allocator.alloc(ReceiveEntry, self.batch_size);
-        // defer allocator.free(receive_buffer);
+        const CQES = 4096;
+        // const NUM_PACKETS = 1_000_000;
+        const NUM_BUFFERS = 64;
+        const BUFSZ = 512;
 
-        // for (receive_buffer) |*entry| {
-        // @memset(&entry.buffer, 0);
-        // @memset(@as([*]u8, @ptrCast(&entry.address))[0..@sizeOf(std.posix.sockaddr)], 0);
+        const HDR_BUFSZ = BUFSZ + @sizeOf(std.os.linux.io_uring_recvmsg_out);
+        var mega_buffer: [NUM_BUFFERS * NUM_BUFFERS * HDR_BUFSZ]u8 = undefined;
+        var buf_ring = try std.os.linux.IoUring.BufferGroup.init(&self.ring, 0, &mega_buffer, HDR_BUFSZ * NUM_BUFFERS, NUM_BUFFERS);
+        defer buf_ring.deinit();
 
-        // entry.address_len = @sizeOf(std.posix.sockaddr);
-        // entry.iovec = std.posix.iovec{
-        //     .base = @ptrCast(&entry.buffer),
-        //     .len = entry.buffer.len,
-        // };
+        var cqes: [CQES]std.os.linux.io_uring_cqe = undefined;
+        _ = try buf_ring.recv_multishot(0, self.socket, 0);
+        _ = try self.ring.submit();
 
-        // }
-        // const local = struct {
-        //     var msg: std.posix.msghdr = .{
-        //         .name = null,
-        //         .namelen = 0,
-        //         .iov = undefined,
-        //         .iovlen = 0,
-        //         .control = null,
-        //         .controllen = 0,
-        //         .flags = 0,
-        //     };
-        // };
+        while (true) {
+            const n = try self.ring.copy_cqes(&cqes, 1);
+            for (cqes[0..n]) |*cqe| {
+                if (cqe.res < 0) {
+                    std.posix.abort();
+                } else {
+                    const size: usize = @intCast(cqe.res);
 
-        // var sqe = try self.ring.recvmsg(0, self.socket, &local.msg, 0);
-        // sqe.flags |= std.os.linux.IOSQE_BUFFER_SELECT | std.os.linux.IOSQE_FIXED_FILE;
-        // sqe.ioprio |= std.os.linux.IORING_RECV_MULTISHOT;
-        // sqe.buf_index = 0;
-        // _ = try self.ring.submit();
+                    const buf = buf_ring.get_cqe(cqe.*) catch unreachable;
+                    const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..]);
+                    var off = @sizeOf(std.os.linux.io_uring_recvmsg_out) + hdr.namelen + hdr.controllen;
+                    while (off < size) {
+                        if (buf[off + 1] != buf[off] ^ 32) {
+                            std.log.err("parity validation failed ({} != {})", .{ buf[off + 1], buf[off] ^ 32 });
+                            return error.ValidationFailure;
+                        }
+                        if (!std.mem.allEqual(u8, buf[off + 2 .. off + BUFSZ], 'P')) {
+                            std.log.err("packet validation failed", .{});
+                            return error.ValidationFailure;
+                        }
+                        off += BUFSZ;
+                    }
 
-        // while (true) {
-        //     var completed: u32 = 0;
-        //     while (completed < submitted) {
-        //         const cq_ready = self.ring.cq_ready();
-        //         if (cq_ready == 0) break;
+                    if (buf.len == 28) {
+                        // Parse IP header
+                        const ip: *const IpHeader = @ptrCast(@alignCast(buf.ptr));
+                        // Parse ICMP header (starts after IP header)
+                        const icmp_start = buf[20..];
+                        const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_start.ptr));
 
-        //         for (0..cq_ready) |i| {
-        //             const cqe = self.ring.cq.cqes[i];
-        //             completed += 1;
+                        std.debug.print("IP Header:\n", .{});
+                        std.debug.print("  Version: {}\n", .{ip.getVersion()});
+                        std.debug.print("  Header Length: {} bytes\n", .{ip.getHeaderLengthBytes()});
+                        std.debug.print("  Total Length: {}\n", .{ip.getTotalLength()});
+                        std.debug.print("  Protocol: {} (1 = ICMP)\n", .{ip.protocol});
+                        std.debug.print("  Source IP: {}.{}.{}.{}\n", .{ ip.getSourceIp()[0], ip.getSourceIp()[1], ip.getSourceIp()[2], ip.getSourceIp()[3] });
+                        std.debug.print("  Dest IP: {}.{}.{}.{}\n", .{ ip.getDestIp()[0], ip.getDestIp()[1], ip.getDestIp()[2], ip.getDestIp()[3] });
 
-        //             switch (std.posix.errno(@as(isize, @intCast(cqe.res)))) {
-        //                 .SUCCESS => {
-        //                     const bytes_received = @as(usize, @intCast(cqe.res));
-        //                     try self.processReceivedPacket(receive_buffer[i].buffer[0..bytes_received]);
-        //                 },
-        //                 .AGAIN => continue, // No data available, continue
-        //                 .INTR => continue, // Interrupted, continue
-        //                 else => |err| {
-        //                     std.log.warn("Receive error: {}", .{err});
-        //                     continue;
-        //                 },
-        //             }
-        //         }
-        //     }
-        // }
-    }
-    fn processReceivedPacket(self: *IoRing, packet_data: []const u8) !void {
-        _ = self;
+                        std.debug.print("\nICMP Header:\n", .{});
+                        std.debug.print("  Type: {} (0 = Echo Reply)\n", .{icmp.type});
+                        std.debug.print("  Code: {}\n", .{icmp.code});
+                        std.debug.print("  Checksum: 0x{X}\n", .{icmp.getChecksum()});
+                        std.debug.print("  ID: {}\n", .{icmp.getId()});
+                        std.debug.print("  Sequence: {}\n", .{icmp.getSeq()});
+                    }
 
-        if (packet_data.len < 20) { // Minimum IP header size
-            return; // Packet too small
-        }
+                    // const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..@sizeOf(std.os.linux.io_uring_recvmsg_out)]);
 
-        // Skip IP header (assume 20 bytes for simplicity, could parse IHL for exact size)
-        const ip_header_len = 20;
-        if (packet_data.len < ip_header_len + @sizeOf(IcmpHeader)) {
-            return;
-        }
-
-        const icmp_data = packet_data[ip_header_len..];
-        const icmp_header_ptr = @as(*const IcmpHeader, @ptrCast(@alignCast(icmp_data.ptr)));
-
-        // Extract source IP from the IP header, not from source_addr which might be corrupted
-        const ip_header = packet_data[0..20];
-        const src_ip_bytes = ip_header[12..16];
-
-        if (src_ip_bytes[0] == 8) {
-            std.log.err("Received ICMP from {}.{}.{}.{}: type={}, code={}", .{
-                src_ip_bytes[0],      src_ip_bytes[1],      src_ip_bytes[2], src_ip_bytes[3],
-                icmp_header_ptr.type, icmp_header_ptr.code,
-            });
+                    // release buffer
+                    buf_ring.put(cqe.buffer_id() catch unreachable);
+                    // const actual_size = size - @sizeOf(std.os.linux.io_uring_recvmsg_out);
+                    // total_received += actual_size;
+                    // total_packets += actual_size / BUFSZ;
+                }
+            }
         }
     }
 };
