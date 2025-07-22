@@ -96,13 +96,13 @@ pub const IoRing = struct {
         );
         errdefer std.posix.close(socket);
 
-        const ring = try std.os.linux.IoUring.init(batch_size, std.os.linux.IORING_FEAT_SQPOLL_NONFIXED);
+        var ring = try std.os.linux.IoUring.init(batch_size, std.os.linux.IORING_FEAT_SQPOLL_NONFIXED);
         errdefer ring.deinit();
 
         // Create CSV file for logging source IPs
         const csv_file = try std.fs.cwd().createFile("ping_responses.csv", .{});
         errdefer csv_file.close();
-        
+
         // Write CSV header
         try csv_file.writeAll("timestamp,source_ip\n");
 
@@ -233,7 +233,6 @@ pub const IoRing = struct {
 
     pub fn receiveLoop(self: *IoRing, allocator: std.mem.Allocator) !void {
         // _ = self;
-        _ = allocator;
         const CQES = 4096;
         // const NUM_PACKETS = 1_000_000;
         const NUM_BUFFERS = 64;
@@ -269,28 +268,19 @@ pub const IoRing = struct {
 
                 const buffer_id = try cqe.buffer_id();
                 const bytes_read = @as(usize, @intCast(cqe.res));
-
-                // std.debug.print("Received {} bytes in buffer {}\n", .{ bytes_read, buffer_id });
-
                 const data = buf_ring.get_cqe(cqe.*) catch unreachable;
 
                 if (bytes_read == 28) {
                     // Parse IP header
                     const ip: *const IpHeader = @ptrCast(@alignCast(data.ptr));
-                    
+
                     const source_ip = ip.getSourceIp();
                     std.log.err("  Source IP: {}.{}.{}.{}", .{ source_ip[0], source_ip[1], source_ip[2], source_ip[3] });
-                    
+
                     // Write to CSV file
                     if (self.csv_file) |file| {
                         const timestamp = std.time.milliTimestamp();
-                        const csv_line = try std.fmt.allocPrint(allocator, "{},{}.{}.{}.{}\n", .{
-                            timestamp,
-                            source_ip[0],
-                            source_ip[1], 
-                            source_ip[2],
-                            source_ip[3]
-                        });
+                        const csv_line = try std.fmt.allocPrint(allocator, "{},{}.{}.{}.{}\n", .{ timestamp, source_ip[0], source_ip[1], source_ip[2], source_ip[3] });
                         defer allocator.free(csv_line);
                         file.writeAll(csv_line) catch |err| {
                             std.log.err("Failed to write to CSV: {}", .{err});
@@ -306,64 +296,6 @@ pub const IoRing = struct {
                     std.debug.print("No more data in this batch\n", .{});
                 }
             }
-
-            // for (cqes[0..n]) |*cqe| {
-            //     if (cqe.res > 0) {
-            //         // const size: usize = @intCast(cqe.res);
-
-            //         const buf = buf_ring.get_cqe(cqe.*) catch unreachable;
-            //         // const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..]);
-            //         // var off = @sizeOf(std.os.linux.io_uring_recvmsg_out) + hdr.namelen + hdr.controllen;
-            //         // while (off < size) {
-            //         //     if (buf[off + 1] != buf[off] ^ 32) {
-            //         //         std.log.err("parity validation failed ({} != {})", .{ buf[off + 1], buf[off] ^ 32 });
-            //         //         return error.ValidationFailure;
-            //         //     }
-            //         //     if (!std.mem.allEqual(u8, buf[off + 2 .. off + BUFSZ], 'P')) {
-            //         //         std.log.err("packet validation failed", .{});
-            //         //         return error.ValidationFailure;
-            //         //     }
-            //         //     off += BUFSZ;
-            //         // }
-
-            //         if (buf.len == 28) {
-            //             // Parse IP header
-            //             const ip: *const IpHeader = @ptrCast(@alignCast(buf.ptr));
-            //             // Parse ICMP header (starts after IP header)
-            //             // const icmp_start = buf[20..];
-            //             // const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_start.ptr));
-
-            //             // std.debug.print("IP Header:\n", .{});
-            //             // std.debug.print("  Version: {}\n", .{ip.getVersion()});
-            //             // std.debug.print("  Header Length: {} bytes\n", .{ip.getHeaderLengthBytes()});
-            //             // std.debug.print("  Total Length: {}\n", .{ip.getTotalLength()});
-            //             // std.debug.print("  Protocol: {} (1 = ICMP)\n", .{ip.protocol});
-            //             std.debug.print("  Source IP: {}.{}.{}.{}\n", .{ ip.getSourceIp()[0], ip.getSourceIp()[1], ip.getSourceIp()[2], ip.getSourceIp()[3] });
-            //             // std.debug.print("  Dest IP: {}.{}.{}.{}\n", .{ ip.getDestIp()[0], ip.getDestIp()[1], ip.getDestIp()[2], ip.getDestIp()[3] });
-
-            //             // std.debug.print("\nICMP Header:\n", .{});
-            //             // std.debug.print("  Type: {} (0 = Echo Reply)\n", .{icmp.type});
-            //             // std.debug.print("  Code: {}\n", .{icmp.code});
-            //             // std.debug.print("  Checksum: 0x{X}\n", .{icmp.getChecksum()});
-            //             // std.debug.print("  ID: {}\n", .{icmp.getId()});
-            //             // std.debug.print("  Sequence: {}\n", .{icmp.getSeq()});
-            //         }
-
-            //         // const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..@sizeOf(std.os.linux.io_uring_recvmsg_out)]);
-
-            //         // release buffer
-            //         buf_ring.put(cqe.buffer_id() catch unreachable);
-
-            //         // Resubmit receive operation to continue listening
-            //         _ = try buf_ring.recv_multishot(0, self.socket, 0);
-            //         _ = try self.ring.submit();
-            //         // const actual_size = size - @sizeOf(std.os.linux.io_uring_recvmsg_out);
-            //         // total_received += actual_size;
-            //         // total_packets += actual_size / BUFSZ;
-            //     }
-            //     // _ = try buf_ring.recv_multishot(0, self.socket, 0);
-            //     // _ = try self.ring.submit();
-            // }
         }
     }
 };
