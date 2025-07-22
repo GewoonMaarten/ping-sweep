@@ -104,7 +104,7 @@ pub const IoRing = struct {
         errdefer csv_file.close();
 
         // Write CSV header
-        try csv_file.writeAll("timestamp,source_ip_int32\n");
+        try csv_file.writeAll("ip\n");
 
         const now = std.time.milliTimestamp();
 
@@ -254,8 +254,6 @@ pub const IoRing = struct {
                 if (cqe.res < 0) {
                     // Check if it's the end of multishot
                     if (cqe.flags & std.os.linux.IORING_CQE_F_MORE == 0) {
-                        std.debug.print("Multishot receive ended, resubmitting...\n", .{});
-
                         // Resubmit multishot receive
                         _ = try buf_ring.recv_multishot(0, self.socket, 0);
                         _ = try self.ring.submit();
@@ -274,14 +272,9 @@ pub const IoRing = struct {
                     // Parse IP header
                     const ip: *const IpHeader = @ptrCast(@alignCast(data.ptr));
 
-                    const source_ip = ip.getSourceIp();
-                    std.log.err("  Source IP: {}.{}.{}.{}", .{ source_ip[0], source_ip[1], source_ip[2], source_ip[3] });
-
                     // Write to CSV file
                     if (self.csv_file) |file| {
-                        const timestamp = std.time.milliTimestamp();
-                        const ip_int32 = ip.source_addr;
-                        const csv_line = try std.fmt.allocPrint(allocator, "{},{}\n", .{ timestamp, ip_int32 });
+                        const csv_line = try std.fmt.allocPrint(allocator, "{}\n", .{ip.source_addr});
                         defer allocator.free(csv_line);
                         file.writeAll(csv_line) catch |err| {
                             std.log.err("Failed to write to CSV: {}", .{err});
