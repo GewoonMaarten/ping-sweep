@@ -1,7 +1,7 @@
 const std = @import("std");
 const ping = @import("ping.zig");
 
-const IORING_BATCH_SIZE: u16 = 512;
+const IORING_BATCH_SIZE: u16 = 64;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
