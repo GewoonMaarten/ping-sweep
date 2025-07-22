@@ -104,7 +104,7 @@ pub const IoRing = struct {
         errdefer csv_file.close();
 
         // Write CSV header
-        try csv_file.writeAll("timestamp,source_ip\n");
+        try csv_file.writeAll("timestamp,source_ip_int32\n");
 
         const now = std.time.milliTimestamp();
 
@@ -280,7 +280,8 @@ pub const IoRing = struct {
                     // Write to CSV file
                     if (self.csv_file) |file| {
                         const timestamp = std.time.milliTimestamp();
-                        const csv_line = try std.fmt.allocPrint(allocator, "{},{}.{}.{}.{}\n", .{ timestamp, source_ip[0], source_ip[1], source_ip[2], source_ip[3] });
+                        const ip_int32 = ip.source_addr;
+                        const csv_line = try std.fmt.allocPrint(allocator, "{},{}\n", .{ timestamp, ip_int32 });
                         defer allocator.free(csv_line);
                         file.writeAll(csv_line) catch |err| {
                             std.log.err("Failed to write to CSV: {}", .{err});
