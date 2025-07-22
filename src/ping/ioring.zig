@@ -79,6 +79,7 @@ pub const IoRing = struct {
     ring: std.os.linux.IoUring,
     socket: std.os.linux.fd_t,
     batch_size: u16 = 0,
+    csv_file: ?std.fs.File = null,
 
     // Metrics
     packets_sent: u64 = 0,
@@ -98,18 +99,29 @@ pub const IoRing = struct {
         const ring = try std.os.linux.IoUring.init(batch_size, std.os.linux.IORING_FEAT_SQPOLL_NONFIXED);
         errdefer ring.deinit();
 
+        // Create CSV file for logging source IPs
+        const csv_file = try std.fs.cwd().createFile("ping_responses.csv", .{});
+        errdefer csv_file.close();
+        
+        // Write CSV header
+        try csv_file.writeAll("timestamp,source_ip\n");
+
         const now = std.time.milliTimestamp();
 
         return IoRing{
             .ring = ring,
             .socket = socket,
             .batch_size = batch_size,
+            .csv_file = csv_file,
             .start_time = now,
             .last_log_time = now,
         };
     }
 
     pub fn deinit(self: *IoRing) void {
+        if (self.csv_file) |file| {
+            file.close();
+        }
         self.ring.deinit();
         std.posix.close(self.socket);
     }
@@ -265,24 +277,25 @@ pub const IoRing = struct {
                 if (bytes_read == 28) {
                     // Parse IP header
                     const ip: *const IpHeader = @ptrCast(@alignCast(data.ptr));
-                    // Parse ICMP header (starts after IP header)
-                    // const icmp_start = buf[20..];
-                    // const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_start.ptr));
-
-                    // std.debug.print("IP Header:\n", .{});
-                    // std.debug.print("  Version: {}\n", .{ip.getVersion()});
-                    // std.debug.print("  Header Length: {} bytes\n", .{ip.getHeaderLengthBytes()});
-                    // std.debug.print("  Total Length: {}\n", .{ip.getTotalLength()});
-                    // std.debug.print("  Protocol: {} (1 = ICMP)\n", .{ip.protocol});
-                    std.log.err("  Source IP: {}.{}.{}.{}", .{ ip.getSourceIp()[0], ip.getSourceIp()[1], ip.getSourceIp()[2], ip.getSourceIp()[3] });
-                    // std.debug.print("  Dest IP: {}.{}.{}.{}\n", .{ ip.getDestIp()[0], ip.getDestIp()[1], ip.getDestIp()[2], ip.getDestIp()[3] });
-
-                    // std.debug.print("\nICMP Header:\n", .{});
-                    // std.debug.print("  Type: {} (0 = Echo Reply)\n", .{icmp.type});
-                    // std.debug.print("  Code: {}\n", .{icmp.code});
-                    // std.debug.print("  Checksum: 0x{X}\n", .{icmp.getChecksum()});
-                    // std.debug.print("  ID: {}\n", .{icmp.getId()});
-                    // std.debug.print("  Sequence: {}\n", .{icmp.getSeq()});
+                    
+                    const source_ip = ip.getSourceIp();
+                    std.log.err("  Source IP: {}.{}.{}.{}", .{ source_ip[0], source_ip[1], source_ip[2], source_ip[3] });
+                    
+                    // Write to CSV file
+                    if (self.csv_file) |file| {
+                        const timestamp = std.time.milliTimestamp();
+                        const csv_line = try std.fmt.allocPrint(allocator, "{},{}.{}.{}.{}\n", .{
+                            timestamp,
+                            source_ip[0],
+                            source_ip[1], 
+                            source_ip[2],
+                            source_ip[3]
+                        });
+                        defer allocator.free(csv_line);
+                        file.writeAll(csv_line) catch |err| {
+                            std.log.err("Failed to write to CSV: {}", .{err});
+                        };
+                    }
                 }
 
                 // Return buffer to the pool
