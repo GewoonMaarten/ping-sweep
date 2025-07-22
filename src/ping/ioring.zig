@@ -237,7 +237,7 @@ pub const IoRing = struct {
         _ = try self.ring.submit();
 
         while (true) {
-            const n = try self.ring.copy_cqes(&cqes, 0);
+            const n = self.ring.copy_cqes(&cqes, 0) catch 0;
 
             if (n == 0) {
                 std.time.sleep(1_000_000); // 1ms
@@ -246,7 +246,10 @@ pub const IoRing = struct {
 
             for (cqes[0..n]) |*cqe| {
                 if (cqe.res < 0) {
-                    std.posix.abort();
+                    // Resubmit receive operation on error
+                    _ = try buf_ring.recv_multishot(0, self.socket, 0);
+                    _ = try self.ring.submit();
+                    continue;
                 } else {
                     const size: usize = @intCast(cqe.res);
 
@@ -265,7 +268,7 @@ pub const IoRing = struct {
                         off += BUFSZ;
                     }
 
-                    if (buf.len == 28) {
+                    if (buf.len >= 28) {
                         // Parse IP header
                         const ip: *const IpHeader = @ptrCast(@alignCast(buf.ptr));
                         // Parse ICMP header (starts after IP header)
@@ -292,6 +295,10 @@ pub const IoRing = struct {
 
                     // release buffer
                     buf_ring.put(cqe.buffer_id() catch unreachable);
+                    
+                    // Resubmit receive operation to continue listening
+                    _ = try buf_ring.recv_multishot(0, self.socket, 0);
+                    _ = try self.ring.submit();
                     // const actual_size = size - @sizeOf(std.os.linux.io_uring_recvmsg_out);
                     // total_received += actual_size;
                     // total_packets += actual_size / BUFSZ;
