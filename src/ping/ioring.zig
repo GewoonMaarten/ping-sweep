@@ -237,73 +237,120 @@ pub const IoRing = struct {
         _ = try self.ring.submit();
 
         while (true) {
-            const n = self.ring.copy_cqes(&cqes, 0) catch 0;
+            const count = try self.ring.copy_cqes(&cqes, 1);
 
-            if (n == 0) {
-                std.time.sleep(1_000_000); // 1ms
-                continue;
-            }
-
-            for (cqes[0..n]) |*cqe| {
+            for (cqes[0..count]) |*cqe| {
                 if (cqe.res < 0) {
-                    // Resubmit receive operation on error
-                    _ = try buf_ring.recv_multishot(0, self.socket, 0);
-                    _ = try self.ring.submit();
+                    // Check if it's the end of multishot
+                    if (cqe.flags & std.os.linux.IORING_CQE_F_MORE == 0) {
+                        std.debug.print("Multishot receive ended, resubmitting...\n", .{});
+
+                        // Resubmit multishot receive
+                        _ = try buf_ring.recv_multishot(0, self.socket, 0);
+                        _ = try self.ring.submit();
+                        continue;
+                    }
+
+                    std.debug.print("Error: {}\n", .{cqe.res});
                     continue;
-                } else {
-                    const size: usize = @intCast(cqe.res);
+                }
 
-                    const buf = buf_ring.get_cqe(cqe.*) catch unreachable;
-                    const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..]);
-                    var off = @sizeOf(std.os.linux.io_uring_recvmsg_out) + hdr.namelen + hdr.controllen;
-                    while (off < size) {
-                        if (buf[off + 1] != buf[off] ^ 32) {
-                            std.log.err("parity validation failed ({} != {})", .{ buf[off + 1], buf[off] ^ 32 });
-                            return error.ValidationFailure;
-                        }
-                        if (!std.mem.allEqual(u8, buf[off + 2 .. off + BUFSZ], 'P')) {
-                            std.log.err("packet validation failed", .{});
-                            return error.ValidationFailure;
-                        }
-                        off += BUFSZ;
-                    }
+                const buffer_id = try cqe.buffer_id();
+                const bytes_read = @as(usize, @intCast(cqe.res));
 
-                    if (buf.len >= 28) {
-                        // Parse IP header
-                        const ip: *const IpHeader = @ptrCast(@alignCast(buf.ptr));
-                        // Parse ICMP header (starts after IP header)
-                        const icmp_start = buf[20..];
-                        const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_start.ptr));
+                // std.debug.print("Received {} bytes in buffer {}\n", .{ bytes_read, buffer_id });
 
-                        std.debug.print("IP Header:\n", .{});
-                        std.debug.print("  Version: {}\n", .{ip.getVersion()});
-                        std.debug.print("  Header Length: {} bytes\n", .{ip.getHeaderLengthBytes()});
-                        std.debug.print("  Total Length: {}\n", .{ip.getTotalLength()});
-                        std.debug.print("  Protocol: {} (1 = ICMP)\n", .{ip.protocol});
-                        std.debug.print("  Source IP: {}.{}.{}.{}\n", .{ ip.getSourceIp()[0], ip.getSourceIp()[1], ip.getSourceIp()[2], ip.getSourceIp()[3] });
-                        std.debug.print("  Dest IP: {}.{}.{}.{}\n", .{ ip.getDestIp()[0], ip.getDestIp()[1], ip.getDestIp()[2], ip.getDestIp()[3] });
+                const data = buf_ring.get_cqe(cqe.*) catch unreachable;
 
-                        std.debug.print("\nICMP Header:\n", .{});
-                        std.debug.print("  Type: {} (0 = Echo Reply)\n", .{icmp.type});
-                        std.debug.print("  Code: {}\n", .{icmp.code});
-                        std.debug.print("  Checksum: 0x{X}\n", .{icmp.getChecksum()});
-                        std.debug.print("  ID: {}\n", .{icmp.getId()});
-                        std.debug.print("  Sequence: {}\n", .{icmp.getSeq()});
-                    }
+                if (bytes_read == 28) {
+                    // Parse IP header
+                    const ip: *const IpHeader = @ptrCast(@alignCast(data.ptr));
+                    // Parse ICMP header (starts after IP header)
+                    // const icmp_start = buf[20..];
+                    // const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_start.ptr));
 
-                    // const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..@sizeOf(std.os.linux.io_uring_recvmsg_out)]);
+                    // std.debug.print("IP Header:\n", .{});
+                    // std.debug.print("  Version: {}\n", .{ip.getVersion()});
+                    // std.debug.print("  Header Length: {} bytes\n", .{ip.getHeaderLengthBytes()});
+                    // std.debug.print("  Total Length: {}\n", .{ip.getTotalLength()});
+                    // std.debug.print("  Protocol: {} (1 = ICMP)\n", .{ip.protocol});
+                    std.log.err("  Source IP: {}.{}.{}.{}", .{ ip.getSourceIp()[0], ip.getSourceIp()[1], ip.getSourceIp()[2], ip.getSourceIp()[3] });
+                    // std.debug.print("  Dest IP: {}.{}.{}.{}\n", .{ ip.getDestIp()[0], ip.getDestIp()[1], ip.getDestIp()[2], ip.getDestIp()[3] });
 
-                    // release buffer
-                    buf_ring.put(cqe.buffer_id() catch unreachable);
-                    
-                    // Resubmit receive operation to continue listening
-                    _ = try buf_ring.recv_multishot(0, self.socket, 0);
-                    _ = try self.ring.submit();
-                    // const actual_size = size - @sizeOf(std.os.linux.io_uring_recvmsg_out);
-                    // total_received += actual_size;
-                    // total_packets += actual_size / BUFSZ;
+                    // std.debug.print("\nICMP Header:\n", .{});
+                    // std.debug.print("  Type: {} (0 = Echo Reply)\n", .{icmp.type});
+                    // std.debug.print("  Code: {}\n", .{icmp.code});
+                    // std.debug.print("  Checksum: 0x{X}\n", .{icmp.getChecksum()});
+                    // std.debug.print("  ID: {}\n", .{icmp.getId()});
+                    // std.debug.print("  Sequence: {}\n", .{icmp.getSeq()});
+                }
+
+                // Return buffer to the pool
+                buf_ring.put(buffer_id);
+
+                // Check if more completions are coming
+                if (cqe.flags & std.os.linux.IORING_CQE_F_MORE == 0) {
+                    std.debug.print("No more data in this batch\n", .{});
                 }
             }
+
+            // for (cqes[0..n]) |*cqe| {
+            //     if (cqe.res > 0) {
+            //         // const size: usize = @intCast(cqe.res);
+
+            //         const buf = buf_ring.get_cqe(cqe.*) catch unreachable;
+            //         // const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..]);
+            //         // var off = @sizeOf(std.os.linux.io_uring_recvmsg_out) + hdr.namelen + hdr.controllen;
+            //         // while (off < size) {
+            //         //     if (buf[off + 1] != buf[off] ^ 32) {
+            //         //         std.log.err("parity validation failed ({} != {})", .{ buf[off + 1], buf[off] ^ 32 });
+            //         //         return error.ValidationFailure;
+            //         //     }
+            //         //     if (!std.mem.allEqual(u8, buf[off + 2 .. off + BUFSZ], 'P')) {
+            //         //         std.log.err("packet validation failed", .{});
+            //         //         return error.ValidationFailure;
+            //         //     }
+            //         //     off += BUFSZ;
+            //         // }
+
+            //         if (buf.len == 28) {
+            //             // Parse IP header
+            //             const ip: *const IpHeader = @ptrCast(@alignCast(buf.ptr));
+            //             // Parse ICMP header (starts after IP header)
+            //             // const icmp_start = buf[20..];
+            //             // const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_start.ptr));
+
+            //             // std.debug.print("IP Header:\n", .{});
+            //             // std.debug.print("  Version: {}\n", .{ip.getVersion()});
+            //             // std.debug.print("  Header Length: {} bytes\n", .{ip.getHeaderLengthBytes()});
+            //             // std.debug.print("  Total Length: {}\n", .{ip.getTotalLength()});
+            //             // std.debug.print("  Protocol: {} (1 = ICMP)\n", .{ip.protocol});
+            //             std.debug.print("  Source IP: {}.{}.{}.{}\n", .{ ip.getSourceIp()[0], ip.getSourceIp()[1], ip.getSourceIp()[2], ip.getSourceIp()[3] });
+            //             // std.debug.print("  Dest IP: {}.{}.{}.{}\n", .{ ip.getDestIp()[0], ip.getDestIp()[1], ip.getDestIp()[2], ip.getDestIp()[3] });
+
+            //             // std.debug.print("\nICMP Header:\n", .{});
+            //             // std.debug.print("  Type: {} (0 = Echo Reply)\n", .{icmp.type});
+            //             // std.debug.print("  Code: {}\n", .{icmp.code});
+            //             // std.debug.print("  Checksum: 0x{X}\n", .{icmp.getChecksum()});
+            //             // std.debug.print("  ID: {}\n", .{icmp.getId()});
+            //             // std.debug.print("  Sequence: {}\n", .{icmp.getSeq()});
+            //         }
+
+            //         // const hdr = std.mem.bytesAsValue(std.os.linux.io_uring_recvmsg_out, buf[0..@sizeOf(std.os.linux.io_uring_recvmsg_out)]);
+
+            //         // release buffer
+            //         buf_ring.put(cqe.buffer_id() catch unreachable);
+
+            //         // Resubmit receive operation to continue listening
+            //         _ = try buf_ring.recv_multishot(0, self.socket, 0);
+            //         _ = try self.ring.submit();
+            //         // const actual_size = size - @sizeOf(std.os.linux.io_uring_recvmsg_out);
+            //         // total_received += actual_size;
+            //         // total_packets += actual_size / BUFSZ;
+            //     }
+            //     // _ = try buf_ring.recv_multishot(0, self.socket, 0);
+            //     // _ = try self.ring.submit();
+            // }
         }
     }
 };
