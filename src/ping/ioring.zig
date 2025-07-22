@@ -237,14 +237,7 @@ pub const IoRing = struct {
         _ = try self.ring.submit();
 
         while (true) {
-            const n = self.ring.copy_cqes(&cqes, 0) catch |err| switch (err) {
-                error.CompletionQueueEmpty => {
-                    // No completions available, wait a bit and try again
-                    std.time.sleep(1_000_000); // 1ms
-                    continue;
-                },
-                else => return err,
-            };
+            const n = self.ring.copy_cqes(&cqes, 0);
             
             if (n == 0) {
                 std.time.sleep(1_000_000); // 1ms
