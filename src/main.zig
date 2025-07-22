@@ -55,15 +55,15 @@ pub fn main() !void {
 
     std.log.err("range list includes: {d} IPs", .{ip_range_list.getIpCount()});
 
+    var receive_ring = try ping.IoRing.init(IORING_BATCH_SIZE);
+    defer receive_ring.deinit();
+    const receive_thread = try std.Thread.spawn(.{}, ping.IoRing.receiveLoop, .{ &receive_ring, allocator });
+
     var processor = ping.BatchProcessor.init(ip_range_list);
     var transmit_ring = try ping.IoRing.init(IORING_BATCH_SIZE);
     defer transmit_ring.deinit();
     const transmit_thread = try std.Thread.spawn(.{}, ping.IoRing.transmitLoop, .{ &transmit_ring, &processor, allocator });
 
-    // var receive_ring = try ping.IoRing.init(IORING_BATCH_SIZE);
-    // defer receive_ring.deinit();
-    // const receive_thread = try std.Thread.spawn(.{}, ping.IoRing.receiveLoop, .{ &receive_ring, allocator });
-
+    receive_thread.join();
     transmit_thread.join();
-    // receive_thread.join();
 }

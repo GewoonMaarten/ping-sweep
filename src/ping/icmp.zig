@@ -23,6 +23,18 @@ pub const IcmpHeader = extern struct {
         while (sum > 0xFFFF) sum = (sum >> 16) + (sum & 0xFFFF);
         self.checksum = ~@as(u16, @truncate(sum));
     }
+
+    pub fn getId(self: *const IcmpHeader) u16 {
+        return std.mem.bigToNative(u16, self.id);
+    }
+
+    pub fn getSeq(self: *const IcmpHeader) u16 {
+        return std.mem.bigToNative(u16, self.seq);
+    }
+
+    pub fn getChecksum(self: *const IcmpHeader) u16 {
+        return std.mem.bigToNative(u16, self.checksum);
+    }
 };
 
 test "IcmpHeader" {
