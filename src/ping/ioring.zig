@@ -280,11 +280,12 @@ pub const IoRing = struct {
 
                 if (bytes_read == 28) {
                     // Parse IP header
-                    const ip: *const IpHeader = @ptrCast(@alignCast(data.ptr));
+                    const ip_header: *const IpHeader = @ptrCast(@alignCast(data.ptr));
+                    const source_addr_host = std.mem.bigToNative(u32, ip_header.source_addr);
 
                     // Write to CSV file
                     if (self.csv_file) |file| {
-                        const csv_line = try std.fmt.allocPrint(allocator, "{}\n", .{ip.source_addr});
+                        const csv_line = try std.fmt.allocPrint(allocator, "{}\n", .{source_addr_host});
                         defer allocator.free(csv_line);
                         file.writeAll(csv_line) catch |err| {
                             std.log.err("Failed to write to CSV: {}", .{err});
