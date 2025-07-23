@@ -86,7 +86,7 @@ pub const IoRing = struct {
     bytes_sent: u64 = 0,
     start_time: i64 = 0,
     last_log_time: i64 = 0,
-    log_interval_ms: i64 = 1_000, // 1 second
+    log_interval_ms: i64 = 1_000,
 
     cqes: [256]std.os.linux.io_uring_cqe = undefined,
 
@@ -112,10 +112,7 @@ pub const IoRing = struct {
             &std.mem.toBytes(recv_buf_size),
         );
 
-        var ring = try std.os.linux.IoUring.init(
-            batch_size,
-            std.os.linux.IORING_SETUP_SQPOLL | std.os.linux.IORING_FEAT_SQPOLL_NONFIXED | std.os.linux.IORING_SETUP_SUBMIT_ALL,
-        );
+        var ring = try std.os.linux.IoUring.init(batch_size, 0);
         errdefer ring.deinit();
 
         // Create CSV file for logging source IPs
@@ -155,12 +152,9 @@ pub const IoRing = struct {
 
             for (batch_buffer[0..packet_count]) |*batch_entry| {
                 _ = try self.ring.sendmsg(0, self.socket, &batch_entry.msghdr, 0);
-
-                self.packets_sent += 1;
-                self.bytes_sent += @sizeOf(std.posix.sockaddr.in) + @sizeOf(IcmpHeader);
             }
-            _ = try self.ring.submit();
-            try self.waitForCompletions();
+            const submitted = try self.ring.submit();
+            try self.waitForCompletions(submitted);
 
             try self.logMetrics();
         }
@@ -168,13 +162,15 @@ pub const IoRing = struct {
         try self.logFinalMetrics();
     }
 
-    fn waitForCompletions(self: *IoRing) !void {
-        const ready = self.ring.sq_ready();
+    fn waitForCompletions(self: *IoRing, ready: u32) !void {
         const completed = try self.ring.copy_cqes(&self.cqes, ready);
         for (self.cqes[0..completed]) |cqe| {
             // code stole from std.posix.sendmsg
             switch (std.posix.errno(@as(isize, @intCast(cqe.res)))) {
-                .SUCCESS => return,
+                .SUCCESS => {
+                    self.packets_sent += 1;
+                    self.bytes_sent += @sizeOf(std.posix.sockaddr.in) + @sizeOf(IcmpHeader);
+                },
 
                 .ACCES => return error.AccessDenied,
                 .AGAIN => return error.WouldBlock,

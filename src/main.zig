@@ -13,7 +13,7 @@ pub fn main() !void {
 
     const white_list_buffer = try std.fs.cwd().readFileAlloc(
         allocator,
-        "whitelist.txt",
+        "config/whitelist.txt",
         4096,
     );
     defer allocator.free(white_list_buffer);
@@ -34,7 +34,7 @@ pub fn main() !void {
 
     const black_list_buffer = try std.fs.cwd().readFileAlloc(
         allocator,
-        "blacklist.txt",
+        "config/blacklist.txt",
         4096,
     );
     defer allocator.free(black_list_buffer);

@@ -1,5 +1,6 @@
 .env
 .aider*
+data/*.csv
 
 #zig
 .zig-cache
