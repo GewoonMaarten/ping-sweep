@@ -1,5 +1,5 @@
 const std = @import("std");
-const ping = @import("ping.zig");
+const ping = @import("ping");
 
 const IORING_BATCH_SIZE: u16 = 64;
 

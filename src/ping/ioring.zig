@@ -116,7 +116,7 @@ pub const IoRing = struct {
         errdefer ring.deinit();
 
         // Create CSV file for logging source IPs
-        const csv_file = try std.fs.cwd().createFile("ping_responses.csv", .{});
+        const csv_file = try std.fs.cwd().createFile("data/ping_responses.csv", .{});
         errdefer csv_file.close();
 
         // Write CSV header
